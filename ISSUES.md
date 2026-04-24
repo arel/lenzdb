@@ -31,6 +31,8 @@
 
 - [x] Add `lnz list` for namespaces, tables, lenses, and paths, with optional `--with-status/-s`.
 
+- [ ] edit for csvs as well?
+
 - [ ] create/edit a lense from the CLI?
 
 - [ ] add to `view` inline options for sql / filter / order / count rows / limit /offset / page (applies limit/offset with page size in project.yaml default 100)?
