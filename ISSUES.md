@@ -10,17 +10,15 @@
 - [x] Schema is loaded from `PROJECT_ROOT/.lenzdb/schema/*.yaml`.
 - [x] Policies are loaded from `PROJECT_ROOT/.lenzdb/policies/*.yaml`.
 - [x] Legacy `data/`, `schema/`, `lenses/`, `policies/` discovery is removed.
-
-- remaining proposed table/lens resolution:
-    - every table has a namespace
-    - omitted namespace means `main`
-    - unqualified SQL table names are allowed only when unambiguous
-    - qualified SQL table names use `[namespace].[name]`
-    - duplicate fully-qualified names are hard errors
-    - duplicate unqualified names require explicit qualification instead of precedence
+- [x] Tables and lenses resolve through the implicit `main` namespace.
+- [x] `main.[name]` works for table references in SQL and lens names in CLI commands.
+- [x] Unqualified names continue to resolve when unambiguous.
+- [x] Unknown namespaces are rejected with project errors.
+- [x] Duplicate names in the current namespace are hard errors.
 
 - remaining proposed subfolder behavior:
     - ignore CSV/SQL files in subfolders by default
     - register subfolder files/folders/globs explicitly in `.lenzdb/project.yaml`
     - registered folders/globs must specify a namespace
     - single registered files may omit namespace and then use `main`
+    - once registered namespaces exist, duplicate unqualified names should require explicit qualification instead of precedence

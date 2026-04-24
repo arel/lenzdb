@@ -30,6 +30,24 @@ def test_hidden_data_and_lenses_are_discovered(example_project: Path) -> None:
     project.validate()
 
 
+def test_main_namespace_resolves_tables_and_lenses(example_project: Path) -> None:
+    project = Project.discover(example_project)
+
+    assert project.schema_for("main.tasks") == project.schema_for("tasks")
+    assert project.table_path("main.projects") == example_project / "projects.csv"
+    assert project.lens_sql("main.open_tasks") == project.lens_sql("open_tasks")
+
+
+def test_unknown_namespace_is_rejected(example_project: Path) -> None:
+    project = Project.discover(example_project)
+
+    with pytest.raises(ProjectError, match="Unknown table namespace 'archive'"):
+        project.schema_for("archive.tasks")
+
+    with pytest.raises(ProjectError, match="Unknown lens namespace 'archive'"):
+        project.lens_sql("archive.open_tasks")
+
+
 def test_legacy_layout_is_not_discovered(tmp_path: Path) -> None:
     legacy_project = tmp_path / "legacy"
     (legacy_project / "data").mkdir(parents=True)

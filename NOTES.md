@@ -103,6 +103,9 @@ my-project/
       kanban.yaml
 ```
 
+Tables and lenses live in the implicit `main` namespace. SQL may use unqualified names
+when unambiguous, or explicit names such as `main.tasks`.
+
 ---
 
 # 7. 🧾 Schema Example

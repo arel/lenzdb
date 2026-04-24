@@ -6,7 +6,10 @@ from dataclasses import dataclass
 from typing import Any
 
 import duckdb
+from sqlglot import exp, parse_one
+from sqlglot.errors import ParseError
 
+from lenzdb.errors import ProjectError
 from lenzdb.project import Project
 
 
@@ -57,10 +60,24 @@ def build_connection(
     return connection
 
 
+def validate_sql_table_references(project: Project, sql: str) -> None:
+    try:
+        expression = parse_one(sql, read="duckdb")
+    except ParseError:
+        return
+
+    for table_expression in expression.find_all(exp.Table):
+        project.resolve_table_name(table_expression.name, table_expression.db or None)
+
+
 def query_lens(
     project: Project, lens_name: str, rows_by_table: dict[str, list[dict[str, Any]]] | None = None
 ) -> QueryResult:
     sql = project.lens_sql(lens_name)
+    try:
+        validate_sql_table_references(project, sql)
+    except ProjectError as exc:
+        raise ProjectError(f"Invalid SQL for lens {lens_name!r}: {exc}") from exc
     connection = build_connection(project, rows_by_table)
     try:
         cursor = connection.execute(sql)

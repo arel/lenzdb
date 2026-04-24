@@ -165,7 +165,9 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
         raise LensAnalysisError(f"Lens {lens_name!r} must read from a base table")
 
     primary_table_expression = from_expression.this
-    primary_table = primary_table_expression.name
+    primary_table = project.resolve_table_name(
+        primary_table_expression.name, primary_table_expression.db or None
+    )
     primary_alias = primary_table_expression.alias_or_name
 
     aliases: dict[str, str] = {primary_alias: primary_table}
@@ -177,7 +179,7 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
         if not isinstance(join.this, exp.Table):
             reasons.append("join target must be a concrete table")
             continue
-        join_table = join.this.name
+        join_table = project.resolve_table_name(join.this.name, join.this.db or None)
         join_alias = join.this.alias_or_name
         aliases[join_alias] = join_table
         if join.args.get("side") not in {None, "LEFT", "RIGHT", "INNER"}:

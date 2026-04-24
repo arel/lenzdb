@@ -16,12 +16,23 @@ import yaml
 from lenzdb.errors import MutationError, ProjectError
 from lenzdb.models import ColumnSchema, LensPolicy, TableSchema
 
+DEFAULT_NAMESPACE = "main"
+
 
 def parse_qualified_name(value: str) -> tuple[str, str]:
     parts = value.split(".", 1)
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ProjectError(f"Expected a qualified name like table.column, got {value!r}")
     return parts[0], parts[1]
+
+
+def parse_namespaced_name(value: str, *, default_namespace: str = DEFAULT_NAMESPACE) -> tuple[str, str]:
+    parts = value.split(".")
+    if len(parts) == 1 and parts[0]:
+        return default_namespace, parts[0]
+    if len(parts) == 2 and parts[0] and parts[1]:
+        return parts[0], parts[1]
+    raise ProjectError(f"Expected a name like resource or namespace.resource, got {value!r}")
 
 
 def canonical_scalar(value: Any) -> str:
@@ -200,25 +211,56 @@ class Project:
         return policies
 
     def lens_sql(self, lens_name: str) -> str:
-        path = self.lenses.get(lens_name)
+        resolved_lens_name = self.resolve_lens_name(lens_name)
+        path = self.lenses.get(resolved_lens_name)
         if path is None:
             raise ProjectError(f"Unknown lens {lens_name!r}")
         return path.read_text(encoding="utf-8")
 
     def schema_for(self, table: str) -> TableSchema:
+        resolved_table = self.resolve_table_name(table)
         try:
-            return self.schemas[table]
+            return self.schemas[resolved_table]
         except KeyError as exc:
             raise ProjectError(f"Unknown table {table!r}") from exc
 
     def policy_for(self, lens_name: str) -> LensPolicy | None:
-        return self.policies.get(lens_name)
+        return self.policies.get(self.resolve_lens_name(lens_name))
 
     def table_path(self, table: str) -> Path:
+        resolved_table = self.resolve_table_name(table)
         try:
-            return self.table_paths[table]
+            return self.table_paths[resolved_table]
         except KeyError as exc:
             raise ProjectError(f"Unknown table {table!r}") from exc
+
+    def resolve_table_name(self, table_name: str, namespace: str | None = None) -> str:
+        return self._resolve_resource_name(table_name, self.schemas, "table", namespace)
+
+    def resolve_lens_name(self, lens_name: str, namespace: str | None = None) -> str:
+        return self._resolve_resource_name(lens_name, self.lenses, "lens", namespace)
+
+    def _resolve_resource_name(
+        self,
+        resource_name: str,
+        resources: dict[str, Any],
+        resource_kind: str,
+        namespace: str | None = None,
+    ) -> str:
+        if namespace is not None:
+            resolved_namespace = namespace or DEFAULT_NAMESPACE
+            name = resource_name
+        else:
+            resolved_namespace, name = parse_namespaced_name(resource_name)
+
+        if resolved_namespace != DEFAULT_NAMESPACE:
+            raise ProjectError(
+                f"Unknown {resource_kind} namespace {resolved_namespace!r}; "
+                f"available namespace: {DEFAULT_NAMESPACE}"
+            )
+        if name not in resources:
+            raise ProjectError(f"Unknown {resource_kind} {resource_name!r}")
+        return name
 
     def table_headers(self, table: str) -> list[str]:
         return list(self.schema_for(table).columns)
