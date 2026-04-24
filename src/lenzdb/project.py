@@ -17,10 +17,12 @@ from lenzdb.errors import MutationError, ProjectError
 from lenzdb.models import ColumnSchema, LensPolicy, TableSchema
 
 DEFAULT_NAMESPACE = "main"
+TABLES_CONFIG_KEY = "tables"
+LENSES_CONFIG_KEY = "lenses"
 
 
 def parse_qualified_name(value: str) -> tuple[str, str]:
-    parts = value.split(".", 1)
+    parts = value.rsplit(".", 1)
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ProjectError(f"Expected a qualified name like table.column, got {value!r}")
     return parts[0], parts[1]
@@ -33,6 +35,18 @@ def parse_namespaced_name(value: str, *, default_namespace: str = DEFAULT_NAMESP
     if len(parts) == 2 and parts[0] and parts[1]:
         return parts[0], parts[1]
     raise ProjectError(f"Expected a name like resource or namespace.resource, got {value!r}")
+
+
+def resource_key(namespace: str, name: str) -> str:
+    return f"{namespace}.{name}"
+
+
+def split_resource_key(key: str) -> tuple[str, str]:
+    return parse_namespaced_name(key)
+
+
+def has_glob_pattern(value: str) -> bool:
+    return any(character in value for character in "*?[")
 
 
 def canonical_scalar(value: Any) -> str:
@@ -118,6 +132,7 @@ class Project:
     def discover(cls, root: str | Path | None = None) -> Project:
         project_root = Path(root or Path.cwd()).resolve()
         lenz_dir = project_root / ".lenzdb"
+        project_config = cls._load_project_config(lenz_dir / "project.yaml")
         data_dir = lenz_dir / "data"
         schema_dir = lenz_dir / "schema"
         lenses_dir = lenz_dir / "lenses"
@@ -127,8 +142,8 @@ class Project:
             raise ProjectError(f"Missing schema directory: {schema_dir}")
 
         schemas = cls._load_schemas(schema_dir)
-        table_paths = cls._load_tables(project_root, data_dir)
-        lenses = cls._load_lenses(project_root, lenses_dir)
+        table_paths = cls._load_tables(project_root, data_dir, project_config)
+        lenses = cls._load_lenses(project_root, lenses_dir, project_config)
         policies = cls._load_policies(policies_dir)
 
         project = cls(
@@ -149,30 +164,57 @@ class Project:
             return yaml.safe_load(handle) or {}
 
     @classmethod
+    def _load_project_config(cls, config_path: Path) -> dict[str, Any]:
+        if not config_path.exists():
+            return {}
+        config = cls._load_yaml(config_path)
+        if not isinstance(config, dict):
+            raise ProjectError(f"Project config must be a mapping: {config_path}")
+        for section_name in [TABLES_CONFIG_KEY, LENSES_CONFIG_KEY]:
+            section = config.get(section_name, [])
+            if not isinstance(section, list):
+                raise ProjectError(
+                    f"Project config field {section_name!r} must be a list: {config_path}"
+                )
+        return config
+
+    @classmethod
     def _load_schemas(cls, schema_dir: Path) -> dict[str, TableSchema]:
         schemas: dict[str, TableSchema] = {}
         for path in sorted(schema_dir.glob("*.y*ml")):
             schema = TableSchema.model_validate(cls._load_yaml(path))
-            if schema.table in schemas:
-                raise ProjectError(f"Duplicate schema for table {schema.table!r}")
-            schemas[schema.table] = schema
+            namespace, table_name = parse_namespaced_name(schema.table)
+            table_key = resource_key(namespace, table_name)
+            if table_key in schemas:
+                raise ProjectError(f"Duplicate schema for table {table_key!r}")
+            schemas[table_key] = schema
         if not schemas:
             raise ProjectError(f"No schema files found in {schema_dir}")
         return schemas
 
     @classmethod
-    def _load_tables(cls, project_root: Path, data_dir: Path) -> dict[str, Path]:
+    def _load_tables(
+        cls, project_root: Path, data_dir: Path, project_config: dict[str, Any]
+    ) -> dict[str, Path]:
         table_paths: dict[str, Path] = {}
         for source_dir in [project_root, data_dir]:
             if not source_dir.exists():
                 continue
             for path in sorted(source_dir.glob("*.csv")):
-                table_name = path.stem
-                if table_name in table_paths:
-                    raise ProjectError(
-                        f"Duplicate CSV table {table_name!r}: {table_paths[table_name]} and {path}"
-                    )
-                table_paths[table_name] = path
+                cls._add_resource_path(
+                    table_paths,
+                    namespace=DEFAULT_NAMESPACE,
+                    name=path.stem,
+                    path=path,
+                    resource_kind="CSV table",
+                )
+        cls._load_registered_paths(
+            project_root,
+            project_config.get(TABLES_CONFIG_KEY, []),
+            suffix=".csv",
+            resource_kind="CSV table",
+            resources=table_paths,
+        )
         if not table_paths:
             raise ProjectError(
                 f"No CSV table files found in {project_root} or {data_dir}"
@@ -180,23 +222,129 @@ class Project:
         return table_paths
 
     @classmethod
-    def _load_lenses(cls, project_root: Path, lenses_dir: Path) -> dict[str, Path]:
+    def _load_lenses(
+        cls, project_root: Path, lenses_dir: Path, project_config: dict[str, Any]
+    ) -> dict[str, Path]:
         lenses: dict[str, Path] = {}
         for source_dir in [project_root, lenses_dir]:
             if not source_dir.exists():
                 continue
             for path in sorted(source_dir.glob("*.sql")):
-                lens_name = path.stem
-                if lens_name in lenses:
-                    raise ProjectError(
-                        f"Duplicate lens {lens_name!r}: {lenses[lens_name]} and {path}"
-                    )
-                lenses[lens_name] = path
+                cls._add_resource_path(
+                    lenses,
+                    namespace=DEFAULT_NAMESPACE,
+                    name=path.stem,
+                    path=path,
+                    resource_kind="lens",
+                )
+        cls._load_registered_paths(
+            project_root,
+            project_config.get(LENSES_CONFIG_KEY, []),
+            suffix=".sql",
+            resource_kind="lens",
+            resources=lenses,
+        )
         if not lenses:
             raise ProjectError(
                 f"No lens SQL files found in {project_root} or {lenses_dir}"
             )
         return lenses
+
+    @classmethod
+    def _load_registered_paths(
+        cls,
+        project_root: Path,
+        entries: list[Any],
+        *,
+        suffix: str,
+        resource_kind: str,
+        resources: dict[str, Path],
+    ) -> None:
+        for index, entry in enumerate(entries, start=1):
+            if not isinstance(entry, dict):
+                raise ProjectError(f"Registered {resource_kind} entry #{index} must be a mapping")
+            path_value = entry.get("path")
+            if not isinstance(path_value, str) or not path_value:
+                raise ProjectError(
+                    f"Registered {resource_kind} entry #{index} must include a non-empty path"
+                )
+            path_pattern = Path(path_value)
+            if path_pattern.is_absolute():
+                raise ProjectError(
+                    f"Registered {resource_kind} path must be relative to the project root: {path_value}"
+                )
+
+            configured_namespace = entry.get("namespace")
+            if configured_namespace is not None and (
+                not isinstance(configured_namespace, str) or not configured_namespace
+            ):
+                raise ProjectError(
+                    f"Registered {resource_kind} entry #{index} has an invalid namespace"
+                )
+
+            configured_name = entry.get("name")
+            if configured_name is not None and (
+                not isinstance(configured_name, str) or not configured_name
+            ):
+                raise ProjectError(f"Registered {resource_kind} entry #{index} has an invalid name")
+
+            is_glob = has_glob_pattern(path_value)
+            resolved_path = (project_root / path_pattern).resolve()
+            is_directory = not is_glob and resolved_path.is_dir()
+            if (is_glob or is_directory) and not configured_namespace:
+                raise ProjectError(
+                    f"Registered {resource_kind} folders and globs must specify a namespace: {path_value}"
+                )
+            if (is_glob or is_directory) and configured_name:
+                raise ProjectError(
+                    f"Registered {resource_kind} folders and globs cannot specify a single name: {path_value}"
+                )
+
+            namespace = configured_namespace or DEFAULT_NAMESPACE
+            if is_glob:
+                paths = sorted(
+                    path.resolve()
+                    for path in project_root.glob(path_value)
+                    if path.is_file() and path.suffix == suffix
+                )
+            elif is_directory:
+                paths = sorted(path.resolve() for path in resolved_path.glob(f"*{suffix}"))
+            else:
+                paths = [resolved_path]
+
+            if not paths:
+                raise ProjectError(f"Registered {resource_kind} path matched no {suffix} files: {path_value}")
+
+            for path in paths:
+                if not path.exists():
+                    raise ProjectError(f"Registered {resource_kind} path does not exist: {path}")
+                if not path.is_file() or path.suffix != suffix:
+                    raise ProjectError(
+                        f"Registered {resource_kind} path must point to a {suffix} file: {path}"
+                    )
+                cls._add_resource_path(
+                    resources,
+                    namespace=namespace,
+                    name=configured_name or path.stem,
+                    path=path,
+                    resource_kind=resource_kind,
+                )
+
+    @staticmethod
+    def _add_resource_path(
+        resources: dict[str, Path],
+        *,
+        namespace: str,
+        name: str,
+        path: Path,
+        resource_kind: str,
+    ) -> None:
+        key = resource_key(namespace, name)
+        if key in resources:
+            raise ProjectError(
+                f"Duplicate {resource_kind} {key!r}: {resources[key]} and {path}"
+            )
+        resources[key] = path
 
     @classmethod
     def _load_policies(cls, policies_dir: Path) -> dict[str, LensPolicy]:
@@ -205,9 +353,11 @@ class Project:
         policies: dict[str, LensPolicy] = {}
         for path in sorted(policies_dir.glob("*.y*ml")):
             policy = LensPolicy.model_validate(cls._load_yaml(path))
-            if policy.lens in policies:
-                raise ProjectError(f"Duplicate policy for lens {policy.lens!r}")
-            policies[policy.lens] = policy
+            namespace, lens_name = parse_namespaced_name(policy.lens)
+            lens_key = resource_key(namespace, lens_name)
+            if lens_key in policies:
+                raise ProjectError(f"Duplicate policy for lens {lens_key!r}")
+            policies[lens_key] = policy
         return policies
 
     def lens_sql(self, lens_name: str) -> str:
@@ -251,16 +401,34 @@ class Project:
             resolved_namespace = namespace or DEFAULT_NAMESPACE
             name = resource_name
         else:
+            parts = resource_name.split(".")
+            if len(parts) == 1 and parts[0]:
+                matches = sorted(
+                    key for key in resources if split_resource_key(key)[1] == resource_name
+                )
+                if len(matches) == 1:
+                    return matches[0]
+                if len(matches) > 1:
+                    raise ProjectError(
+                        f"Ambiguous {resource_kind} {resource_name!r}; use one of: "
+                        + ", ".join(matches)
+                    )
+                raise ProjectError(f"Unknown {resource_kind} {resource_name!r}")
             resolved_namespace, name = parse_namespaced_name(resource_name)
 
-        if resolved_namespace != DEFAULT_NAMESPACE:
+        key = resource_key(resolved_namespace, name)
+        if key not in resources and resolved_namespace not in self._resource_namespaces(resources):
             raise ProjectError(
                 f"Unknown {resource_kind} namespace {resolved_namespace!r}; "
-                f"available namespace: {DEFAULT_NAMESPACE}"
+                f"available namespaces: {', '.join(self._resource_namespaces(resources))}"
             )
-        if name not in resources:
+        if key not in resources:
             raise ProjectError(f"Unknown {resource_kind} {resource_name!r}")
-        return name
+        return key
+
+    @staticmethod
+    def _resource_namespaces(resources: dict[str, Any]) -> list[str]:
+        return sorted({split_resource_key(key)[0] for key in resources})
 
     def table_headers(self, table: str) -> list[str]:
         return list(self.schema_for(table).columns)
@@ -328,7 +496,8 @@ class Project:
         for table, schema in self.schemas.items():
             for column_name, column in schema.columns.items():
                 if column.type == "ref":
-                    referenced_schema = self.schemas.get(column.table or "")
+                    referenced_table = self.resolve_table_name(column.table or "")
+                    referenced_schema = self.schemas.get(referenced_table)
                     if referenced_schema is None:
                         raise ProjectError(
                             f"Column {table}.{column_name} references missing table {column.table!r}"
@@ -337,7 +506,8 @@ class Project:
         for lens_name, policy in self.policies.items():
             if lens_name not in self.lenses:
                 raise ProjectError(f"Policy references missing lens {lens_name!r}")
-            schema = self.schema_for(policy.primary_table)
+            primary_table = self.resolve_table_name(policy.primary_table)
+            schema = self.schema_for(primary_table)
             if policy.primary_key != schema.primary_key:
                 raise ProjectError(
                     f"Policy {lens_name!r} primary key {policy.primary_key!r} does not match "
@@ -345,10 +515,11 @@ class Project:
                 )
             for output_name, target in policy.editable.items():
                 table_name, column_name = parse_qualified_name(target)
-                if table_name != policy.primary_table:
+                target_table = self.resolve_table_name(table_name)
+                if target_table != primary_table:
                     raise ProjectError(
                         f"Editable mapping {output_name!r} must target the primary table "
-                        f"{policy.primary_table!r}, got {table_name!r}"
+                        f"{primary_table!r}, got {target_table!r}"
                     )
                 if column_name not in schema.columns:
                     raise ProjectError(
@@ -356,10 +527,11 @@ class Project:
                     )
             for output_name, ref_policy in policy.references.items():
                 table_name, column_name = parse_qualified_name(ref_policy.write_to)
-                if table_name != policy.primary_table:
+                target_table = self.resolve_table_name(table_name)
+                if target_table != primary_table:
                     raise ProjectError(
                         f"Reference mapping {output_name!r} must write to the primary table "
-                        f"{policy.primary_table!r}, got {table_name!r}"
+                        f"{primary_table!r}, got {target_table!r}"
                     )
                 source_column = schema.columns.get(column_name)
                 if source_column is None:
@@ -369,9 +541,10 @@ class Project:
                 if source_column.type != "ref":
                     raise ProjectError(
                         f"Reference mapping {output_name!r} must target a ref column, got "
-                        f"{policy.primary_table}.{column_name}"
+                        f"{primary_table}.{column_name}"
                     )
-                lookup_schema = self.schemas.get(ref_policy.lookup.table)
+                lookup_table = self.resolve_table_name(ref_policy.lookup.table)
+                lookup_schema = self.schemas.get(lookup_table)
                 if lookup_schema is None:
                     raise ProjectError(
                         f"Reference mapping {output_name!r} targets missing lookup table "
@@ -414,7 +587,7 @@ class Project:
                         raise ProjectError(f"Invalid {table}.{column_name}: {exc}") from exc
                     if column.type == "ref" and value is not None:
                         lookup_key = serialize_value(value, column)
-                        referenced_table = column.table or ""
+                        referenced_table = self.resolve_table_name(column.table or "")
                         if lookup_key not in referenced_keys[referenced_table]:
                             raise ProjectError(
                                 f"Invalid reference {table}.{column_name}={lookup_key!r}: "

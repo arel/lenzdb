@@ -155,11 +155,13 @@ def diff_snapshots(
 
 
 def resolve_target_column(
+    project: Project,
     analyzed_column: AnalyzedColumn,
     policy: LensPolicy | None,
 ) -> tuple[str, str] | None:
     if policy and analyzed_column.output_name in policy.editable:
-        return parse_qualified_name(policy.editable[analyzed_column.output_name])
+        table_name, column_name = parse_qualified_name(policy.editable[analyzed_column.output_name])
+        return project.resolve_table_name(table_name), column_name
     if analyzed_column.source_table and analyzed_column.source_column:
         return analyzed_column.source_table, analyzed_column.source_column
     return None
@@ -177,7 +179,7 @@ def find_reference_match(
     display_value: str,
     reference_creations: list[TableInsert],
 ) -> Any:
-    lookup_table = reference_policy.lookup.table
+    lookup_table = project.resolve_table_name(reference_policy.lookup.table)
     lookup_schema = project.schema_for(lookup_table)
     lookup_key = lookup_schema.primary_key
     match_column = reference_policy.lookup.match
@@ -257,6 +259,7 @@ def collect_row_changes(
         if policy and output_name in policy.references:
             ref_policy = policy.references[output_name]
             target_table, target_column = parse_qualified_name(ref_policy.write_to)
+            target_table = project.resolve_table_name(target_table)
             if new_value == "":
                 parsed_value = None
             else:
@@ -268,7 +271,7 @@ def collect_row_changes(
                     reference_creations,
                 )
         else:
-            target = resolve_target_column(analyzed_column, policy)
+            target = resolve_target_column(project, analyzed_column, policy)
             if target is None:
                 raise MutationError(f"Column {output_name!r} does not map to a writable target")
             target_table, target_column = target

@@ -59,6 +59,60 @@ def test_view_rejects_unknown_sql_table_namespace(runner, example_project: Path)
     assert "Unknown table namespace 'archive'" in result.stderr
 
 
+def test_view_allows_readonly_cte_lens(runner, example_project: Path) -> None:
+    (example_project / "cte_tasks.sql").write_text(
+        "with todo_tasks as (select id, title from tasks where status = 'todo') "
+        "select * from todo_tasks\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app, ["view", "cte_tasks", "--project", str(example_project), "--format", "markdown"]
+    )
+
+    assert result.exit_code == 0
+    assert "Ship CLI skeleton" in result.stdout
+
+
+def test_view_registered_namespaced_lens_and_unqualified_table(
+    runner, example_project: Path
+) -> None:
+    imports = example_project / "imports"
+    reports = example_project / "reports"
+    imports.mkdir()
+    reports.mkdir()
+    (imports / "notes.csv").write_text("id,text\nn-1,Useful\n", encoding="utf-8")
+    (reports / "notes.sql").write_text("select id, text from notes\n", encoding="utf-8")
+    (example_project / ".lenzdb" / "schema" / "client_notes.yaml").write_text(
+        "table: client.notes\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  text:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+    (example_project / ".lenzdb" / "project.yaml").write_text(
+        "tables:\n"
+        "  - path: imports/*.csv\n"
+        "    namespace: client\n"
+        "lenses:\n"
+        "  - path: reports/*.sql\n"
+        "    namespace: client\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app, ["view", "client.notes", "--project", str(example_project), "--format", "markdown"]
+    )
+
+    assert result.exit_code == 0
+    assert "| id | text |" in result.stdout
+    assert "Useful" in result.stdout
+
+
 def test_check_and_explain(runner, example_project: Path) -> None:
     check_result = runner.invoke(app, ["check", "--project", str(example_project)])
     assert check_result.exit_code == 0

@@ -61,7 +61,16 @@ def resolve_column_table(
 ) -> str | None:
     explicit_table = column_expression.table
     if explicit_table:
-        return aliases.get(explicit_table, explicit_table)
+        if explicit_table in aliases:
+            return aliases[explicit_table]
+        explicit_namespace = column_expression.args.get("db")
+        try:
+            return project.resolve_table_name(
+                explicit_table,
+                explicit_namespace.name if explicit_namespace is not None else None,
+            )
+        except ProjectError:
+            return None
 
     column_name = column_expression.name
     matches = [
@@ -98,12 +107,12 @@ def safe_join_reason(
         if not isinstance(left, exp.Column) or not isinstance(right, exp.Column):
             continue
 
-        left_table = left.table
-        right_table = right.table
-        if {left_table, right_table} != {primary_alias, join_alias}:
+        left_table = resolve_column_table(left, {primary_alias: primary_table, join_alias: join_table}, project, primary_table)
+        right_table = resolve_column_table(right, {primary_alias: primary_table, join_alias: join_table}, project, primary_table)
+        if {left_table, right_table} != {primary_table, join_table}:
             continue
 
-        if left_table == primary_alias:
+        if left_table == primary_table:
             primary_column_name = left.name
             join_column_name = right.name
         else:
@@ -113,7 +122,7 @@ def safe_join_reason(
         primary_column = primary_schema.columns.get(primary_column_name)
         if primary_column is None or primary_column.type != "ref":
             continue
-        if primary_column.table != join_table:
+        if project.resolve_table_name(primary_column.table or "") != join_table:
             continue
         if join_column_name != join_schema.primary_key:
             continue
@@ -321,7 +330,8 @@ def validate_policy_against_analysis(
     project: Project, policy: LensPolicy, columns: list[AnalyzedColumn]
 ) -> None:
     available = {column.output_name: column for column in columns}
-    schema = project.schema_for(policy.primary_table)
+    primary_table = project.resolve_table_name(policy.primary_table)
+    schema = project.schema_for(primary_table)
 
     for output_name, target in policy.editable.items():
         analyzed = available.get(output_name)
@@ -332,7 +342,8 @@ def validate_policy_against_analysis(
                 f"Editable policy column {output_name!r} must select a primary-table base column"
             )
         table_name, column_name = parse_qualified_name(target)
-        if table_name != policy.primary_table or column_name not in schema.columns:
+        target_table = project.resolve_table_name(table_name)
+        if target_table != primary_table or column_name not in schema.columns:
             raise ProjectError(
                 f"Editable policy column {output_name!r} targets invalid path {target!r}"
             )

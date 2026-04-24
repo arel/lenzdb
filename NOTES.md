@@ -104,7 +104,18 @@ my-project/
 ```
 
 Tables and lenses live in the implicit `main` namespace. SQL may use unqualified names
-when unambiguous, or explicit names such as `main.tasks`.
+when unambiguous, or explicit names such as `main.tasks`. Subfolders are ignored
+unless registered in `.lenzdb/project.yaml`:
+
+```yaml
+tables:
+  - path: clients/acme/*.csv
+    namespace: acme
+
+lenses:
+  - path: reports/acme/*.sql
+    namespace: acme
+```
 
 ---
 
@@ -371,6 +382,7 @@ Included in v1:
 * `lnz view`, `check`, `explain`, `diff`, `plan`, `apply`, and `edit`
 * safe updates and inserts for writable lenses
 * policy-driven reference resolution and optional related-row creation
+* explicit subfolder registration through `.lenzdb/project.yaml`
 * table, csv, json, ndjson, markdown, and html output formats
 
 Out of scope in v1:

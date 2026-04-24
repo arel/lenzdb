@@ -15,10 +15,8 @@
 - [x] Unqualified names continue to resolve when unambiguous.
 - [x] Unknown namespaces are rejected with project errors.
 - [x] Duplicate names in the current namespace are hard errors.
-
-- remaining proposed subfolder behavior:
-    - ignore CSV/SQL files in subfolders by default
-    - register subfolder files/folders/globs explicitly in `.lenzdb/project.yaml`
-    - registered folders/globs must specify a namespace
-    - single registered files may omit namespace and then use `main`
-    - once registered namespaces exist, duplicate unqualified names should require explicit qualification instead of precedence
+- [x] CSV/SQL files in subfolders are ignored by default.
+- [x] Subfolder files/folders/globs can be registered explicitly in `.lenzdb/project.yaml`.
+- [x] Registered folders/globs must specify a namespace.
+- [x] Single registered files may omit namespace and then use `main`.
+- [x] Registered duplicate short names require explicit qualification instead of precedence.
