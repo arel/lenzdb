@@ -20,3 +20,27 @@
 - [x] Registered folders/globs must specify a namespace.
 - [x] Single registered files may omit namespace and then use `main`.
 - [x] Registered duplicate short names require explicit qualification instead of precedence.
+
+- [ ] how are ambiguous csv types handled (string/number/null) etc.? handled by duckdb?
+
+- [ ] on error after edit, can the broken file be preserved somewhere and re-editable? (not needed for apply?)
+
+- [ ] add deletion logic for "edit"? (compare against original query)
+
+- [x] Be able to `view` CSV data files as well as lenses, including shell completion sources.
+
+- [x] Add `lnz list` for namespaces, tables, lenses, and paths, with optional `--with-status/-s`.
+
+- [ ] create/edit a lense from the CLI?
+
+- [ ] add to `view` inline options for sql / filter / order / count rows / limit /offset / page (applies limit/offset with page size in project.yaml default 100)?
+
+- [x] Fix missing project folder error:
+vscode ➜ /workspaces/lenz-db (Arel/initial-project-skeleton) $ lnz view all_tasks
+Error: Missing schema directory: /workspaces/lenz-db/.lenzdb/schema
+
+- [x] Fix CSV output/writeback line endings to use `\n`.
+-id,title,status,project_id
++id,title,status,project_id^M
+
+- [ ] update README with less disjointed humor (stick to one universal less nerdy theme)

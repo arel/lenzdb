@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lenzdb.cli import app
+from lenzdb.cli import app, complete_project_resource
 
 
 def test_view_markdown(runner, example_project: Path) -> None:
@@ -12,6 +12,15 @@ def test_view_markdown(runner, example_project: Path) -> None:
     assert result.exit_code == 0
     assert "| id | title | status | project_name |" in result.stdout
     assert "Ship CLI skeleton" in result.stdout
+
+
+def test_view_table_markdown(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app, ["view", "tasks", "--project", str(example_project), "--format", "markdown"]
+    )
+    assert result.exit_code == 0
+    assert "| id | title | status | project_id |" in result.stdout
+    assert "p-1" in result.stdout
 
 
 def test_view_table_output_is_not_duplicated(runner, example_project: Path) -> None:
@@ -25,6 +34,14 @@ def test_project_root_env_var(runner, example_project: Path, monkeypatch) -> Non
     result = runner.invoke(app, ["view", "open_tasks", "--format", "markdown"])
     assert result.exit_code == 0
     assert "Ship CLI skeleton" in result.stdout
+
+
+def test_project_resource_completion(example_project: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LENZDB_PROJECT_ROOT", str(example_project))
+    completions = complete_project_resource("ta")
+    assert "tasks" in completions
+    assert "main.tasks" not in completions
+    assert complete_project_resource("main.o") == ["main.open_tasks"]
 
 
 def test_view_qualified_lens_and_sql_tables(runner, example_project: Path) -> None:
@@ -82,7 +99,7 @@ def test_view_registered_namespaced_lens_and_unqualified_table(
     imports.mkdir()
     reports.mkdir()
     (imports / "notes.csv").write_text("id,text\nn-1,Useful\n", encoding="utf-8")
-    (reports / "notes.sql").write_text("select id, text from notes\n", encoding="utf-8")
+    (reports / "notes_view.sql").write_text("select id, text from notes\n", encoding="utf-8")
     (example_project / ".lenzdb" / "schema" / "client_notes.yaml").write_text(
         "table: client.notes\n"
         "primary_key: id\n"
@@ -105,12 +122,38 @@ def test_view_registered_namespaced_lens_and_unqualified_table(
     )
 
     result = runner.invoke(
-        app, ["view", "client.notes", "--project", str(example_project), "--format", "markdown"]
+        app, ["view", "client.notes_view", "--project", str(example_project), "--format", "markdown"]
     )
 
     assert result.exit_code == 0
     assert "| id | text |" in result.stdout
     assert "Useful" in result.stdout
+
+
+def test_list_resources(runner, example_project: Path) -> None:
+    result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
+    assert result.exit_code == 0
+    assert "| kind | namespace | name | path |" in result.stdout
+    assert "| table | main | tasks | tasks.csv |" in result.stdout
+    assert "| lens | main | open_tasks | open_tasks.sql |" in result.stdout
+    assert "status" not in result.stdout
+
+
+def test_list_resources_with_status(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app, ["list", "--project", str(example_project), "--with-status", "--format", "markdown"]
+    )
+    assert result.exit_code == 0
+    assert "| kind | namespace | name | path | status |" in result.stdout
+    assert "| table | main | tasks | tasks.csv | ok |" in result.stdout
+    assert "| lens | main | open_tasks | open_tasks.sql | ok |" in result.stdout
+
+
+def test_missing_project_error_is_helpful(runner, tmp_path: Path) -> None:
+    result = runner.invoke(app, ["view", "all_tasks", "--project", str(tmp_path)])
+    assert result.exit_code == 1
+    assert "No LenzDB project found" in result.stderr
+    assert "Run from a project root or pass --project." in result.stderr
 
 
 def test_check_and_explain(runner, example_project: Path) -> None:
@@ -131,7 +174,7 @@ def test_diff_command(runner, example_project: Path, tmp_path: Path) -> None:
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship real CLI,todo,Core Platform\n"
-        "t-2,Write getting started docs,doing,Docs Refresh\n",
+        "t-2,Write GETTING started docs,doing,Docs Refresh\n",
         encoding="utf-8",
     )
     result = runner.invoke(

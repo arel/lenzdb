@@ -1,4 +1,4 @@
 id,title,status,project_id
 t-1,Ship CLI skeleton,todo,p-1
-t-2,Write getting started docs,doing,p-2
+t-2,Write GETTING started docs,doing,p-2
 t-3,Close phase zero,done,p-1

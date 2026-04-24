@@ -441,7 +441,7 @@ def apply_mutation_plan(project: Project, plan: MutationPlan) -> MutationPlan:
 def export_lens_csv(project: Project, lens_name: str, target: Path) -> None:
     result = query_lens(project, lens_name)
     with target.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=result.columns)
+        writer = csv.DictWriter(handle, fieldnames=result.columns, lineterminator="\n")
         writer.writeheader()
         for row in snapshot_rows(result.columns, result.rows):
             writer.writerow(row)

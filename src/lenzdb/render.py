@@ -22,7 +22,7 @@ def normalize_rows(columns: list[str], rows: list[dict[str, Any]]) -> list[dict[
 
 def render_csv(columns: list[str], rows: list[dict[str, Any]]) -> str:
     buffer = io.StringIO()
-    writer = csv.DictWriter(buffer, fieldnames=columns)
+    writer = csv.DictWriter(buffer, fieldnames=columns, lineterminator="\n")
     writer.writeheader()
     for row in normalize_rows(columns, rows):
         writer.writerow(row)

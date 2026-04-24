@@ -139,7 +139,10 @@ class Project:
         policies_dir = lenz_dir / "policies"
 
         if not schema_dir.exists():
-            raise ProjectError(f"Missing schema directory: {schema_dir}")
+            raise ProjectError(
+                f"No LenzDB project found at {project_root}. Expected {schema_dir}. "
+                "Run from a project root or pass --project."
+            )
 
         schemas = cls._load_schemas(schema_dir)
         table_paths = cls._load_tables(project_root, data_dir, project_config)
@@ -609,7 +612,9 @@ class Project:
                 temp_path = target.with_suffix(f"{target.suffix}.tmp-{os.getpid()}")
                 temp_paths[table] = temp_path
                 with temp_path.open("w", encoding="utf-8", newline="") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=list(schema.columns))
+                    writer = csv.DictWriter(
+                        handle, fieldnames=list(schema.columns), lineterminator="\n"
+                    )
                     writer.writeheader()
                     for row in rows_by_table[table]:
                         writer.writerow(

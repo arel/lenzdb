@@ -155,7 +155,7 @@ def test_legacy_layout_is_not_discovered(tmp_path: Path) -> None:
     (legacy_project / "schema").mkdir()
     (legacy_project / "lenses").mkdir()
 
-    with pytest.raises(ProjectError, match=r"Missing schema directory: .*\.lenzdb/schema"):
+    with pytest.raises(ProjectError, match="No LenzDB project found"):
         Project.discover(legacy_project)
 
 

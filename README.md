@@ -106,8 +106,14 @@ Run the bundled example:
 ```bash
 lnz check --project examples/basic
 lnz view open_tasks --project examples/basic
+lnz view tasks --project examples/basic
+lnz list --project examples/basic
+lnz list --project examples/basic --with-status
 lnz explain open_tasks --project examples/basic
 ```
+
+`view` accepts either a lens or a table name. If both exist with the same name,
+LenzDB refuses to guess, because guessing is how a Tuesday becomes paperwork.
 
 Export a lens, edit it, and preview the writeback plan:
 

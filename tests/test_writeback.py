@@ -15,7 +15,7 @@ def test_plan_updates_existing_rows(example_project: Path, tmp_path: Path) -> No
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship production CLI,doing,Core Platform\n"
-        "t-2,Write getting started docs,doing,Docs Refresh\n",
+        "t-2,Write GETTING started docs,doing,Docs Refresh\n",
         encoding="utf-8",
     )
 
@@ -32,7 +32,7 @@ def test_plan_inserts_and_creates_reference(example_project: Path, tmp_path: Pat
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship CLI skeleton,todo,Core Platform\n"
-        "t-2,Write getting started docs,doing,Docs Refresh\n"
+        "t-2,Write GETTING started docs,doing,Docs Refresh\n"
         ",Add release checklist,todo,Launch Ops\n",
         encoding="utf-8",
     )
@@ -53,7 +53,7 @@ def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> No
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship production CLI,doing,Core Platform\n"
-        "t-2,Write getting started docs,doing,Docs Refresh\n",
+        "t-2,Write GETTING started docs,doing,Docs Refresh\n",
         encoding="utf-8",
     )
 
@@ -64,6 +64,7 @@ def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> No
     tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
     assert "Ship production CLI" in tasks_csv
     assert "t-1,Ship production CLI,doing,p-1" in tasks_csv
+    assert b"\r\n" not in (example_project / "tasks.csv").read_bytes()
 
 
 def test_deletions_are_rejected(example_project: Path, tmp_path: Path) -> None:
@@ -100,7 +101,7 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship production CLI,doing,Core Platform\n"
-        "t-2,Write getting started docs,doing,Docs Refresh\n",
+        "t-2,Write GETTING started docs,doing,Docs Refresh\n",
         encoding="utf-8",
     )
 
@@ -119,7 +120,7 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
         "from pathlib import Path\n"
         "path = Path(__import__('sys').argv[1])\n"
         "text = path.read_text(encoding='utf-8')\n"
-        "path.write_text(text.replace('Write getting started docs', 'Refresh docs'), encoding='utf-8')\n"
+        "path.write_text(text.replace('Write GETTING started docs', 'Refresh docs'), encoding='utf-8')\n"
         "PY\n",
         encoding="utf-8",
     )
