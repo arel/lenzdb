@@ -15,6 +15,7 @@
 - [x] Unqualified names continue to resolve when unambiguous.
 - [x] Unknown namespaces are rejected with project errors.
 - [x] Duplicate names in the current namespace are hard errors.
+- [x] Table and lens names must be distinct.
 - [x] CSV/SQL files in subfolders are ignored by default.
 - [x] Subfolder files/folders/globs can be registered explicitly in `.lenzdb/project.yaml`.
 - [x] Registered folders/globs must specify a namespace.
@@ -31,7 +32,7 @@
 
 - [x] Add `lnz list` for namespaces, tables, lenses, and paths, with optional `--with-status/-s`.
 
-- [ ] edit for csvs as well?
+- [x] Treat CSV tables as identity-lens resources for `view`, `explain`, `diff`, `plan`, `apply`, and `edit`.
 
 - [ ] create/edit a lense from the CLI?
 

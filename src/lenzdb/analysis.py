@@ -148,6 +148,46 @@ def _column_reason(kind: ColumnKind) -> str:
     }[kind]
 
 
+def analyze_table(project: Project, table_name: str) -> LensAnalysis:
+    resolved_table = project.resolve_table_name(table_name)
+    schema = project.schema_for(resolved_table)
+    columns: list[AnalyzedColumn] = []
+    for column_name, column_schema in schema.columns.items():
+        writable = not column_schema.immutable and column_name != schema.primary_key
+        if column_name == schema.primary_key:
+            reason = "primary key updates are not supported"
+        elif column_schema.immutable:
+            reason = "column is immutable in schema"
+        else:
+            reason = "direct base column"
+        columns.append(
+            AnalyzedColumn(
+                output_name=column_name,
+                kind="direct_base",
+                source_table=resolved_table,
+                source_column=column_name,
+                writable=writable,
+                reason=reason,
+            )
+        )
+    return LensAnalysis(
+        lens_name=resolved_table,
+        primary_table=resolved_table,
+        primary_alias=resolved_table,
+        primary_key_output=schema.primary_key,
+        columns=columns,
+        writable=True,
+        warnings=["identity lens for CSV table"],
+    )
+
+
+def analyze_resource(project: Project, resource_name: str) -> LensAnalysis:
+    resource_kind, resolved_name = project.resolve_resource_name(resource_name)
+    if resource_kind == "lens":
+        return analyze_lens(project, resolved_name)
+    return analyze_table(project, resolved_name)
+
+
 def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
     sql = project.lens_sql(lens_name)
     try:

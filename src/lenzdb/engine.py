@@ -99,3 +99,21 @@ def query_lens(
         return QueryResult(columns=columns, rows=rows)
     finally:
         connection.close()
+
+
+def query_table(
+    project: Project, table_name: str, rows_by_table: dict[str, list[dict[str, Any]]] | None = None
+) -> QueryResult:
+    resolved_table = project.resolve_table_name(table_name)
+    columns = project.table_headers(resolved_table)
+    rows = (rows_by_table or project.load_all_rows()).get(resolved_table, [])
+    return QueryResult(columns=columns, rows=rows)
+
+
+def query_resource(
+    project: Project, resource_name: str, rows_by_table: dict[str, list[dict[str, Any]]] | None = None
+) -> QueryResult:
+    resource_kind, resolved_name = project.resolve_resource_name(resource_name)
+    if resource_kind == "lens":
+        return query_lens(project, resolved_name, rows_by_table)
+    return query_table(project, resolved_name, rows_by_table)

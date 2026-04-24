@@ -149,6 +149,13 @@ def test_list_resources_with_status(runner, example_project: Path) -> None:
     assert "| lens | main | open_tasks | open_tasks.sql | ok |" in result.stdout
 
 
+def test_explain_table_resource(runner, example_project: Path) -> None:
+    result = runner.invoke(app, ["explain", "tasks", "--project", str(example_project)])
+    assert result.exit_code == 0
+    assert "Primary table: main.tasks" in result.stdout
+    assert "identity lens for CSV table" in result.stdout
+
+
 def test_missing_project_error_is_helpful(runner, tmp_path: Path) -> None:
     result = runner.invoke(app, ["view", "all_tasks", "--project", str(tmp_path)])
     assert result.exit_code == 1

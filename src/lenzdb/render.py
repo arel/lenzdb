@@ -100,7 +100,7 @@ def render_view(columns: list[str], rows: list[dict[str, Any]], output_format: s
 
 def render_analysis(analysis: LensAnalysis) -> str:
     lines = [
-        f"Lens: {analysis.lens_name}",
+        f"Resource: {analysis.lens_name}",
         f"Primary table: {analysis.primary_table or 'unknown'}",
         f"Writable: {'yes' if analysis.writable else 'no'}",
         f"Primary key output: {analysis.primary_key_output or '(missing)'}",
@@ -143,7 +143,7 @@ def render_diff(entries: list[DiffEntry]) -> str:
 
 def render_plan(plan: MutationPlan) -> str:
     lines = [
-        f"Lens: {plan.lens_name}",
+        f"Resource: {plan.lens_name}",
         f"Primary table: {plan.primary_table}",
         f"Updates: {len(plan.updates)}",
         f"Inserts: {len(plan.inserts)}",

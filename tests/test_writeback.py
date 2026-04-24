@@ -67,6 +67,43 @@ def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> No
     assert b"\r\n" not in (example_project / "tasks.csv").read_bytes()
 
 
+def test_table_resource_plan_and_apply(example_project: Path, tmp_path: Path) -> None:
+    edited = tmp_path / "tasks.csv"
+    edited.write_text(
+        "id,title,status,project_id\n"
+        "t-1,Ship production CLI,doing,p-1\n"
+        "t-2,Write GETTING started docs,doing,p-2\n"
+        "t-3,Close phase zero,done,p-1\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    plan = build_mutation_plan(project, "tasks", edited)
+
+    assert plan.primary_table == "main.tasks"
+    assert len(plan.updates) == 1
+    assert plan.updates[0].changes == {"title": "Ship production CLI", "status": "doing"}
+
+    apply_mutation_plan(project, plan)
+    tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
+    assert "t-1,Ship production CLI,doing,p-1" in tasks_csv
+
+
+def test_table_resource_rejects_primary_key_edits(example_project: Path, tmp_path: Path) -> None:
+    edited = tmp_path / "tasks.csv"
+    edited.write_text(
+        "id,title,status,project_id\n"
+        "renamed,Ship CLI skeleton,todo,p-1\n"
+        "t-2,Write GETTING started docs,doing,p-2\n"
+        "t-3,Close phase zero,done,p-1\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    with pytest.raises(MutationError, match="Deleting rows"):
+        build_mutation_plan(project, "tasks", edited)
+
+
 def test_deletions_are_rejected(example_project: Path, tmp_path: Path) -> None:
     edited = tmp_path / "edited.csv"
     edited.write_text(

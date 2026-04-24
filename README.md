@@ -112,8 +112,10 @@ lnz list --project examples/basic --with-status
 lnz explain open_tasks --project examples/basic
 ```
 
-`view` accepts either a lens or a table name. If both exist with the same name,
-LenzDB refuses to guess, because guessing is how a Tuesday becomes paperwork.
+`view`, `explain`, `diff`, `plan`, `apply`, and `edit` accept either a lens or
+a table name. CSV tables behave like they have an implicit identity lens, so
+`tasks.csv` is roughly `select * from tasks`. Table and lens names must be
+distinct; guessing is how a Tuesday becomes paperwork.
 
 Export a lens, edit it, and preview the writeback plan:
 
@@ -122,6 +124,15 @@ lnz view open_tasks --project examples/basic --format csv > /tmp/open_tasks.csv
 $EDITOR /tmp/open_tasks.csv
 lnz diff open_tasks /tmp/open_tasks.csv --project examples/basic
 lnz plan open_tasks /tmp/open_tasks.csv --project examples/basic
+```
+
+The same flow works for raw CSV tables:
+
+```bash
+lnz view tasks --project examples/basic --format csv > /tmp/tasks.csv
+$EDITOR /tmp/tasks.csv
+lnz plan tasks /tmp/tasks.csv --project examples/basic
+lnz apply tasks /tmp/tasks.csv --project examples/basic
 ```
 
 Apply the changes:

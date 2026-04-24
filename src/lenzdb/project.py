@@ -378,7 +378,11 @@ class Project:
             raise ProjectError(f"Unknown table {table!r}") from exc
 
     def policy_for(self, lens_name: str) -> LensPolicy | None:
-        return self.policies.get(self.resolve_lens_name(lens_name))
+        try:
+            resolved_lens = self.resolve_lens_name(lens_name)
+        except ProjectError:
+            return None
+        return self.policies.get(resolved_lens)
 
     def table_path(self, table: str) -> Path:
         resolved_table = self.resolve_table_name(table)
@@ -392,6 +396,14 @@ class Project:
 
     def resolve_lens_name(self, lens_name: str, namespace: str | None = None) -> str:
         return self._resolve_resource_name(lens_name, self.lenses, "lens", namespace)
+
+    def resolve_resource_name(self, resource_name: str) -> tuple[str, str]:
+        resources: dict[str, str] = {
+            **{table_name: "table" for table_name in self.schemas},
+            **{lens_name: "lens" for lens_name in self.lenses},
+        }
+        resolved_name = self._resolve_resource_name(resource_name, resources, "resource")
+        return resources[resolved_name], resolved_name
 
     def _resolve_resource_name(
         self,
@@ -489,6 +501,13 @@ class Project:
         return {table: self.load_table_rows(table) for table in self.schemas}
 
     def validate_configuration(self) -> None:
+        colliding_resources = sorted(set(self.schemas) & set(self.lenses))
+        if colliding_resources:
+            raise ProjectError(
+                "Table and lens names must be distinct; collisions="
+                f"{colliding_resources}"
+            )
+
         missing_tables = sorted(table for table in self.schemas if table not in self.table_paths)
         extra_tables = sorted(table for table in self.table_paths if table not in self.schemas)
         if missing_tables or extra_tables:

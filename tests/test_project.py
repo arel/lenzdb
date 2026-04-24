@@ -65,7 +65,7 @@ def test_registered_single_files_default_to_main_namespace(example_project: Path
     imports.mkdir()
     reports.mkdir()
     (imports / "notes.csv").write_text("id,text\nn-1,Useful\n", encoding="utf-8")
-    (reports / "notes.sql").write_text("select id, text from notes\n", encoding="utf-8")
+    (reports / "notes_view.sql").write_text("select id, text from notes\n", encoding="utf-8")
     (example_project / ".lenzdb" / "schema" / "notes.yaml").write_text(
         "table: notes\n"
         "primary_key: id\n"
@@ -81,14 +81,14 @@ def test_registered_single_files_default_to_main_namespace(example_project: Path
         "tables:\n"
         "  - path: imports/notes.csv\n"
         "lenses:\n"
-        "  - path: reports/notes.sql\n",
+        "  - path: reports/notes_view.sql\n",
         encoding="utf-8",
     )
 
     project = Project.discover(example_project)
 
     assert project.table_path("notes") == imports / "notes.csv"
-    assert project.lens_sql("notes") == "select id, text from notes\n"
+    assert project.lens_sql("notes_view") == "select id, text from notes\n"
 
 
 def test_registered_folders_and_globs_require_namespace(example_project: Path) -> None:
@@ -112,7 +112,7 @@ def test_registered_namespace_makes_unqualified_duplicates_ambiguous(tmp_path: P
     imports.mkdir()
     (project_root / "tasks.csv").write_text("id,title\nt-1,Main task\n", encoding="utf-8")
     (imports / "tasks.csv").write_text("id,title\nt-2,Client task\n", encoding="utf-8")
-    (project_root / "tasks.sql").write_text("select id, title from main.tasks\n", encoding="utf-8")
+    (project_root / "tasks_view.sql").write_text("select id, title from main.tasks\n", encoding="utf-8")
     (project_root / ".lenzdb" / "schema" / "tasks.yaml").write_text(
         "table: tasks\n"
         "primary_key: id\n"
@@ -147,6 +147,27 @@ def test_registered_namespace_makes_unqualified_duplicates_ambiguous(tmp_path: P
     assert project.table_path("client.tasks") == imports / "tasks.csv"
     with pytest.raises(ProjectError, match="Ambiguous table 'tasks'"):
         project.table_path("tasks")
+
+
+def test_table_and_lens_names_must_be_distinct(example_project: Path) -> None:
+    (example_project / "open_tasks.csv").write_text(
+        "id,title\nx-1,Collision\n",
+        encoding="utf-8",
+    )
+    (example_project / ".lenzdb" / "schema" / "open_tasks.yaml").write_text(
+        "table: open_tasks\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  title:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ProjectError, match="Table and lens names must be distinct"):
+        Project.discover(example_project)
 
 
 def test_legacy_layout_is_not_discovered(tmp_path: Path) -> None:

@@ -11,8 +11,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from lenzdb.analysis import AnalyzedColumn, LensAnalysis, analyze_lens
-from lenzdb.engine import query_lens
+from lenzdb.analysis import AnalyzedColumn, LensAnalysis, analyze_resource
+from lenzdb.engine import query_resource
 from lenzdb.errors import MutationError
 from lenzdb.models import LensPolicy, ReferencePolicy
 from lenzdb.project import (
@@ -297,18 +297,18 @@ def collect_row_changes(
 
 
 def build_mutation_plan(
-    project: Project, lens_name: str, edited_csv_path: str | Path
+    project: Project, resource_name: str, edited_csv_path: str | Path
 ) -> MutationPlan:
-    analysis = analyze_lens(project, lens_name)
+    analysis = analyze_resource(project, resource_name)
     if not analysis.writable:
         raise MutationError(
-            "Lens is not writable: "
+            "Resource is not writable: "
             + "; ".join(analysis.reasons or ["missing primary key mapping"])
         )
     if analysis.primary_table is None or analysis.primary_key_output is None:
         raise MutationError("Lens is missing primary table or primary key information")
 
-    result = query_lens(project, lens_name)
+    result = query_resource(project, resource_name)
     current_rows = snapshot_rows(result.columns, result.rows)
     edited_rows = read_snapshot_csv(Path(edited_csv_path), result.columns)
     diff_entries = diff_snapshots(
@@ -418,7 +418,7 @@ def build_mutation_plan(
     project.validate_rows_map(working_rows)
 
     return MutationPlan(
-        lens_name=lens_name,
+        lens_name=analysis.lens_name,
         primary_table=analysis.primary_table,
         primary_key_output=analysis.primary_key_output,
         diff_entries=diff_entries,
@@ -438,8 +438,8 @@ def apply_mutation_plan(project: Project, plan: MutationPlan) -> MutationPlan:
     return plan
 
 
-def export_lens_csv(project: Project, lens_name: str, target: Path) -> None:
-    result = query_lens(project, lens_name)
+def export_lens_csv(project: Project, resource_name: str, target: Path) -> None:
+    result = query_resource(project, resource_name)
     with target.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=result.columns, lineterminator="\n")
         writer.writeheader()
@@ -457,9 +457,10 @@ def run_editor(editor: str, path: Path) -> None:
         raise MutationError(f"Editor command failed with exit code {exc.returncode}") from exc
 
 
-def edit_lens(project: Project, lens_name: str, editor: str) -> MutationPlan:
+def edit_lens(project: Project, resource_name: str, editor: str) -> MutationPlan:
     with tempfile.TemporaryDirectory(prefix="lenzdb-") as temp_dir:
-        temp_path = Path(temp_dir) / f"{lens_name}.csv"
-        export_lens_csv(project, lens_name, temp_path)
+        safe_name = resource_name.replace("/", "_").replace("\\", "_")
+        temp_path = Path(temp_dir) / f"{safe_name}.csv"
+        export_lens_csv(project, resource_name, temp_path)
         run_editor(editor, temp_path)
-        return build_mutation_plan(project, lens_name, temp_path)
+        return build_mutation_plan(project, resource_name, temp_path)
