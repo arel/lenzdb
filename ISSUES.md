@@ -36,7 +36,7 @@
 
 - [ ] create/edit a lense from the CLI?
 
-- [ ] add to `view` inline options for sql / filter / order / count rows / limit /offset / page (applies limit/offset with page size in project.yaml default 100)?
+- [x] Add `view` inline options for SQL, filter, selected columns, order, count rows, limit, offset, and page with `view.page_size` defaulting to 100.
 
 - [x] Fix missing project folder error:
 vscode ➜ /workspaces/lenz-db (Arel/initial-project-skeleton) $ lnz view all_tasks

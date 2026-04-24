@@ -19,6 +19,7 @@ from lenzdb.models import ColumnSchema, LensPolicy, TableSchema
 DEFAULT_NAMESPACE = "main"
 TABLES_CONFIG_KEY = "tables"
 LENSES_CONFIG_KEY = "lenses"
+DEFAULT_VIEW_PAGE_SIZE = 100
 
 
 def parse_qualified_name(value: str) -> tuple[str, str]:
@@ -127,6 +128,7 @@ class Project:
     schemas: dict[str, TableSchema]
     lenses: dict[str, Path]
     policies: dict[str, LensPolicy]
+    view_page_size: int = DEFAULT_VIEW_PAGE_SIZE
 
     @classmethod
     def discover(cls, root: str | Path | None = None) -> Project:
@@ -148,6 +150,7 @@ class Project:
         table_paths = cls._load_tables(project_root, data_dir, project_config)
         lenses = cls._load_lenses(project_root, lenses_dir, project_config)
         policies = cls._load_policies(policies_dir)
+        view_page_size = cls._load_view_page_size(project_config)
 
         project = cls(
             root=project_root,
@@ -157,6 +160,7 @@ class Project:
             schemas=schemas,
             lenses=lenses,
             policies=policies,
+            view_page_size=view_page_size,
         )
         project.validate_configuration()
         return project
@@ -179,7 +183,18 @@ class Project:
                 raise ProjectError(
                     f"Project config field {section_name!r} must be a list: {config_path}"
                 )
+        view_section = config.get("view", {})
+        if not isinstance(view_section, dict):
+            raise ProjectError(f"Project config field 'view' must be a mapping: {config_path}")
         return config
+
+    @staticmethod
+    def _load_view_page_size(project_config: dict[str, Any]) -> int:
+        view_section = project_config.get("view", {})
+        page_size = view_section.get("page_size", DEFAULT_VIEW_PAGE_SIZE)
+        if not isinstance(page_size, int) or isinstance(page_size, bool) or page_size < 1:
+            raise ProjectError("Project config field 'view.page_size' must be a positive integer")
+        return page_size
 
     @classmethod
     def _load_schemas(cls, schema_dir: Path) -> dict[str, TableSchema]:

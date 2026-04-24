@@ -29,6 +29,132 @@ def test_view_table_output_is_not_duplicated(runner, example_project: Path) -> N
     assert result.stdout.count("Ship CLI skeleton") == 1
 
 
+def test_view_columns_filter_and_order(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--columns",
+            "title,status",
+            "--filter",
+            "status in ('todo', 'doing')",
+            "--order",
+            "-status,title",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "| title | status |" in result.stdout
+    assert "project_id" not in result.stdout
+    assert result.stdout.index("Ship CLI skeleton") < result.stdout.index("Write GETTING started docs")
+
+
+def test_view_paginates_with_project_page_size(runner, example_project: Path) -> None:
+    (example_project / ".lenzdb" / "project.yaml").write_text(
+        "view:\n"
+        "  page_size: 1\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--order",
+            "id",
+            "--page",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Write GETTING started docs" in result.stdout
+    assert "Ship CLI skeleton" not in result.stdout
+
+
+def test_view_count_allows_filter(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--filter",
+            "status = 'todo'",
+            "--count",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "| count |" in result.stdout
+    assert "| 1 |" in result.stdout
+
+
+def test_view_sql_uses_resource_alias(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--sql",
+            "select title from resource where status = 'doing'",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "| title |" in result.stdout
+    assert "Write GETTING started docs" in result.stdout
+    assert "Ship CLI skeleton" not in result.stdout
+
+
+def test_view_rejects_incompatible_sql_and_convenience_flags(
+    runner, example_project: Path
+) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--sql",
+            "select * from resource",
+            "--limit",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--sql cannot be combined with view convenience options" in result.stderr
+
+
+def test_view_rejects_empty_sql(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["view", "tasks", "--project", str(example_project), "--sql", ""],
+    )
+
+    assert result.exit_code == 1
+    assert "--sql must not be empty" in result.stderr
+
+
 def test_project_root_env_var(runner, example_project: Path, monkeypatch) -> None:
     monkeypatch.setenv("LENZDB_PROJECT_ROOT", str(example_project))
     result = runner.invoke(app, ["view", "open_tasks", "--format", "markdown"])

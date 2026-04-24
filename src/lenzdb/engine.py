@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import duckdb
+from duckdb import Error as DuckDBError
 from sqlglot import exp, parse_one
 from sqlglot.errors import ParseError
 
@@ -34,6 +35,17 @@ def duckdb_type(column_type: str) -> str:
 class QueryResult:
     columns: list[str]
     rows: list[dict[str, Any]]
+
+
+@dataclass(slots=True)
+class ResourceQuery:
+    columns: list[str] | None = None
+    where: str | None = None
+    order: list[str] | None = None
+    limit: int | None = None
+    offset: int | None = None
+    count: bool = False
+    sql: str | None = None
 
 
 def build_connection(
@@ -97,6 +109,115 @@ def query_lens(
         columns = [description[0] for description in cursor.description]
         rows = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
         return QueryResult(columns=columns, rows=rows)
+    finally:
+        connection.close()
+
+
+def table_sql(project: Project, table_name: str) -> str:
+    resolved_table = project.resolve_table_name(table_name)
+    namespace, local_name = split_resource_key(resolved_table)
+    return f"SELECT * FROM {quote_identifier(namespace)}.{quote_identifier(local_name)}"
+
+
+def lens_sql(project: Project, lens_name: str) -> str:
+    sql = project.lens_sql(lens_name).strip().removesuffix(";")
+    try:
+        return resolve_sql_table_references(project, sql)
+    except ProjectError as exc:
+        raise ProjectError(f"Invalid SQL for lens {lens_name!r}: {exc}") from exc
+
+
+def resource_sql(project: Project, resource_name: str) -> str:
+    resource_kind, resolved_name = project.resolve_resource_name(resource_name)
+    if resource_kind == "lens":
+        return lens_sql(project, resolved_name)
+    return table_sql(project, resolved_name)
+
+
+def fetch_query_result(
+    connection: duckdb.DuckDBPyConnection,
+    sql: str,
+    *,
+    error_prefix: str = "Query failed",
+) -> QueryResult:
+    try:
+        cursor = connection.execute(sql)
+    except DuckDBError as exc:
+        raise ProjectError(f"{error_prefix}: {exc}") from exc
+    columns = [description[0] for description in cursor.description]
+    rows = [dict(zip(columns, row, strict=False)) for row in cursor.fetchall()]
+    return QueryResult(columns=columns, rows=rows)
+
+
+def validate_query_columns(
+    requested_columns: list[str],
+    available_columns: list[str],
+    *,
+    option_name: str,
+) -> None:
+    unknown = [column for column in requested_columns if column not in available_columns]
+    if unknown:
+        raise ProjectError(
+            f"Unknown {option_name} column(s): {', '.join(unknown)}. "
+            f"Available columns: {', '.join(available_columns)}"
+        )
+
+
+def order_expression(order_column: str) -> tuple[str, str]:
+    direction = "DESC" if order_column.startswith("-") else "ASC"
+    column = order_column[1:] if order_column.startswith("-") else order_column
+    if not column:
+        raise ProjectError("Order columns cannot be empty")
+    return column, direction
+
+
+def build_resource_view_sql(
+    base_sql: str,
+    available_columns: list[str],
+    query: ResourceQuery,
+) -> str:
+    if query.sql:
+        return f"WITH resource AS ({base_sql}) {query.sql}"
+
+    if query.count:
+        select_sql = "SELECT count(*) AS count"
+    elif query.columns:
+        validate_query_columns(query.columns, available_columns, option_name="selected")
+        select_sql = "SELECT " + ", ".join(quote_identifier(column) for column in query.columns)
+    else:
+        select_sql = "SELECT *"
+
+    sql = f"WITH resource AS ({base_sql}) {select_sql} FROM resource"
+    if query.where:
+        sql += f" WHERE {query.where}"
+    if query.order:
+        parsed_order = [order_expression(column) for column in query.order]
+        validate_query_columns(
+            [column for column, _direction in parsed_order],
+            available_columns,
+            option_name="order",
+        )
+        sql += " ORDER BY " + ", ".join(
+            f"{quote_identifier(column)} {direction}" for column, direction in parsed_order
+        )
+    if query.limit is not None:
+        sql += f" LIMIT {query.limit}"
+    if query.offset is not None:
+        sql += f" OFFSET {query.offset}"
+    return sql
+
+
+def query_resource_view(project: Project, resource_name: str, query: ResourceQuery) -> QueryResult:
+    base_sql = resource_sql(project, resource_name)
+    connection = build_connection(project)
+    try:
+        base_result = fetch_query_result(
+            connection,
+            f"WITH resource AS ({base_sql}) SELECT * FROM resource LIMIT 0",
+            error_prefix="Resource query failed",
+        )
+        sql = build_resource_view_sql(base_sql, base_result.columns, query)
+        return fetch_query_result(connection, sql)
     finally:
         connection.close()
 

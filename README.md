@@ -80,10 +80,14 @@ tables:
 lenses:
   - path: reports/acme/*.sql
     namespace: acme
+
+view:
+  page_size: 100
 ```
 
 Folders and globs must specify a namespace. Single registered files may omit one
-and will use `main`.
+and will use `main`. `view.page_size` controls `lnz view --page`; when omitted,
+it defaults to `100`, because someone has to be the sensible one.
 
 ## Namespaces
 
@@ -107,6 +111,12 @@ Run the bundled example:
 lnz check --project examples/basic
 lnz view open_tasks --project examples/basic
 lnz view tasks --project examples/basic
+lnz view tasks --project examples/basic --columns id,title,status
+lnz view tasks --project examples/basic --filter "status = 'todo'"
+lnz view tasks --project examples/basic --order status,-title --limit 20
+lnz view tasks --project examples/basic --page 2
+lnz view tasks --project examples/basic --count
+lnz view open_tasks --project examples/basic --sql "select title from resource where status = 'doing'"
 lnz list --project examples/basic
 lnz list --project examples/basic --with-status
 lnz explain open_tasks --project examples/basic
@@ -116,6 +126,13 @@ lnz explain open_tasks --project examples/basic
 a table name. CSV tables behave like they have an implicit identity lens, so
 `tasks.csv` is roughly `select * from tasks`. Table and lens names must be
 distinct; guessing is how a Tuesday becomes paperwork.
+
+`lnz view` has convenience flags for quick inspection. `--columns` chooses a
+comma-separated set of output columns, `--filter` accepts a SQL `WHERE` fragment,
+and `--order` accepts comma-separated columns with a `-` prefix for descending
+sorts. `--page` uses the project page size, while `--limit` and `--offset` do
+exactly what they say on the tin. `--sql` is the escape hatch: it runs a SQL
+query where the selected table or lens is available as `resource`.
 
 Export a lens, edit it, and preview the writeback plan:
 

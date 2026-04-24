@@ -11,7 +11,7 @@ from typing import Annotated
 import typer
 
 from lenzdb.analysis import analyze_lens, analyze_resource
-from lenzdb.engine import query_lens, query_resource
+from lenzdb.engine import ResourceQuery, query_lens, query_resource, query_resource_view
 from lenzdb.errors import LenzError
 from lenzdb.planner import (
     apply_mutation_plan,
@@ -154,6 +154,25 @@ def handle_errors(function):
     return wrapper
 
 
+def parse_comma_list(value: str | None, *, option_name: str) -> list[str] | None:
+    if value is None:
+        return None
+    items = [item.strip() for item in value.split(",")]
+    if not items or any(not item for item in items):
+        raise LenzError(f"{option_name} must be a comma-separated list without empty items")
+    return items
+
+
+def validate_non_negative(value: int | None, *, option_name: str) -> None:
+    if value is not None and value < 0:
+        raise LenzError(f"{option_name} must be zero or greater")
+
+
+def validate_positive(value: int | None, *, option_name: str) -> None:
+    if value is not None and value < 1:
+        raise LenzError(f"{option_name} must be one or greater")
+
+
 @app.command()
 @handle_errors
 def view(
@@ -171,10 +190,101 @@ def view(
         case_sensitive=False,
         show_default=True,
     ),
+    columns: Annotated[
+        str | None,
+        typer.Option(
+            "--columns",
+            help="Comma-separated columns to show, e.g. id,title,status.",
+        ),
+    ] = None,
+    where: Annotated[
+        str | None,
+        typer.Option(
+            "--filter",
+            help="SQL WHERE fragment evaluated against the resource.",
+        ),
+    ] = None,
+    order: Annotated[
+        str | None,
+        typer.Option(
+            "--order",
+            help="Comma-separated order columns. Prefix with '-' for descending.",
+        ),
+    ] = None,
+    count: Annotated[
+        bool,
+        typer.Option(
+            "--count",
+            help="Return the row count. May be combined with --filter.",
+        ),
+    ] = False,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Maximum number of rows to return."),
+    ] = None,
+    offset: Annotated[
+        int | None,
+        typer.Option("--offset", help="Number of rows to skip."),
+    ] = None,
+    page: Annotated[
+        int | None,
+        typer.Option("--page", help="One-based page number using the configured page size."),
+    ] = None,
+    page_size: Annotated[
+        int | None,
+        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+    ] = None,
+    sql: Annotated[
+        str | None,
+        typer.Option(
+            "--sql",
+            help="SQL query over the selected resource, exposed as table name 'resource'.",
+        ),
+    ] = None,
     project: ProjectOption = None,
 ) -> None:
     project_instance = load_project(project)
-    result = query_resource(project_instance, name)
+    selected_columns = parse_comma_list(columns, option_name="--columns")
+    order_columns = parse_comma_list(order, option_name="--order")
+    if sql is not None and not sql.strip():
+        raise LenzError("--sql must not be empty")
+    validate_positive(limit, option_name="--limit")
+    validate_non_negative(offset, option_name="--offset")
+    validate_positive(page, option_name="--page")
+    validate_positive(page_size, option_name="--page-size")
+
+    convenience_options = [
+        option is not None
+        for option in [selected_columns, where, order_columns, limit, offset, page, page_size]
+    ]
+    if sql is not None and (count or any(convenience_options)):
+        raise LenzError("--sql cannot be combined with view convenience options")
+    if count and any(
+        option is not None for option in [selected_columns, order_columns, limit, offset, page, page_size]
+    ):
+        raise LenzError("--count may only be combined with --filter")
+    if page is not None and (limit is not None or offset is not None):
+        raise LenzError("--page cannot be combined with --limit or --offset")
+    if page_size is not None and page is None:
+        raise LenzError("--page-size requires --page")
+
+    effective_limit = limit
+    effective_offset = offset
+    if page is not None:
+        effective_page_size = page_size or project_instance.view_page_size
+        effective_limit = effective_page_size
+        effective_offset = (page - 1) * effective_page_size
+
+    query = ResourceQuery(
+        columns=selected_columns,
+        where=where,
+        order=order_columns,
+        limit=effective_limit,
+        offset=effective_offset,
+        count=count,
+        sql=sql,
+    )
+    result = query_resource_view(project_instance, name, query)
     typer.echo(render_view(result.columns, result.rows, output_format), nl=False)
 
 
