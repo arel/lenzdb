@@ -265,6 +265,15 @@ def test_list_resources(runner, example_project: Path) -> None:
     assert "status" not in result.stdout
 
 
+def test_list_resources_with_dotted_lens_filename(runner, example_project: Path) -> None:
+    (example_project / "bar.foo.sql").write_text("select id, title from tasks\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| lens | main | bar.foo | bar.foo.sql |" in result.stdout
+
+
 def test_list_resources_with_status(runner, example_project: Path) -> None:
     result = runner.invoke(
         app, ["list", "--project", str(example_project), "--with-status", "--format", "markdown"]

@@ -47,3 +47,7 @@ Error: Missing schema directory: /workspaces/lenz-db/.lenzdb/schema
 +id,title,status,project_id^M
 
 - [ ] update README with less disjointed humor (stick to one universal less nerdy theme)
+
+- [ ] defining PK? default behavior `id` column? first column? compound columns? defined in config somewhere?
+
+- [ ] command to create PK column?

@@ -30,7 +30,7 @@ def parse_qualified_name(value: str) -> tuple[str, str]:
 
 
 def parse_namespaced_name(value: str, *, default_namespace: str = DEFAULT_NAMESPACE) -> tuple[str, str]:
-    parts = value.split(".")
+    parts = value.split(".", 1)
     if len(parts) == 1 and parts[0]:
         return default_namespace, parts[0]
     if len(parts) == 2 and parts[0] and parts[1]:
@@ -431,8 +431,7 @@ class Project:
             resolved_namespace = namespace or DEFAULT_NAMESPACE
             name = resource_name
         else:
-            parts = resource_name.split(".")
-            if len(parts) == 1 and parts[0]:
+            if "." not in resource_name and resource_name:
                 matches = sorted(
                     key for key in resources if split_resource_key(key)[1] == resource_name
                 )
@@ -445,6 +444,11 @@ class Project:
                     )
                 raise ProjectError(f"Unknown {resource_kind} {resource_name!r}")
             resolved_namespace, name = parse_namespaced_name(resource_name)
+            key = resource_key(resolved_namespace, name)
+            if key not in resources and resolved_namespace not in self._resource_namespaces(resources):
+                default_key = resource_key(DEFAULT_NAMESPACE, resource_name)
+                if default_key in resources:
+                    return default_key
 
         key = resource_key(resolved_namespace, name)
         if key not in resources and resolved_namespace not in self._resource_namespaces(resources):

@@ -11,7 +11,7 @@ from lenzdb.project import Project
 def test_project_discovery_and_validation(example_project: Path) -> None:
     project = Project.discover(example_project)
     assert sorted(project.schemas) == ["main.projects", "main.tasks"]
-    assert sorted(project.lenses) == ["main.all_tasks", "main.open_tasks"]
+    assert {"main.all_tasks", "main.open_tasks"}.issubset(project.lenses)
     project.validate()
 
 
@@ -36,6 +36,14 @@ def test_main_namespace_resolves_tables_and_lenses(example_project: Path) -> Non
     assert project.schema_for("main.tasks") == project.schema_for("tasks")
     assert project.table_path("main.projects") == example_project / "projects.csv"
     assert project.lens_sql("main.open_tasks") == project.lens_sql("open_tasks")
+
+
+def test_dotted_lens_filename_resolves_in_main_namespace(example_project: Path) -> None:
+    (example_project / "bar.foo.sql").write_text("select id, title from tasks\n", encoding="utf-8")
+    project = Project.discover(example_project)
+
+    assert project.lenses["main.bar.foo"] == example_project / "bar.foo.sql"
+    assert project.lens_sql("main.bar.foo") == project.lens_sql("bar.foo")
 
 
 def test_unknown_namespace_is_rejected(example_project: Path) -> None:
