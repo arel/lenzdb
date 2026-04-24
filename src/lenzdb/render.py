@@ -78,9 +78,10 @@ def render_table(columns: list[str], rows: list[dict[str, Any]]) -> str:
         table.add_column(column)
     for row in normalized:
         table.add_row(*(row.get(column, "") for column in columns))
-    console = Console(record=True, color_system=None, force_terminal=False, width=120)
-    console.print(table)
-    return console.export_text()
+    console = Console(color_system=None, force_terminal=False, width=120)
+    with console.capture() as capture:
+        console.print(table)
+    return capture.get()
 
 
 def render_view(columns: list[str], rows: list[dict[str, Any]], output_format: str) -> str:

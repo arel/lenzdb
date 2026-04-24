@@ -106,10 +106,11 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
 
     apply_result = runner.invoke(
         app,
-        ["apply", "open_tasks", str(edited), "--project", str(example_project), "--yes"],
+        ["apply", "open_tasks", str(edited), "--project", str(example_project)],
     )
     assert apply_result.exit_code == 0
     assert "Changes applied." in apply_result.stdout
+    assert "Apply these changes?" not in apply_result.stdout
 
     editor_script = tmp_path / "edit.sh"
     editor_script.write_text(
@@ -133,11 +134,11 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
             str(example_project),
             "--editor",
             str(editor_script),
-            "--yes",
         ],
     )
     assert edit_result.exit_code == 0
     assert "Changes applied." in edit_result.stdout
+    assert "Apply these changes?" not in edit_result.stdout
 
     tasks_csv = (example_project / "data" / "tasks.csv").read_text(encoding="utf-8")
     assert "Refresh docs" in tasks_csv

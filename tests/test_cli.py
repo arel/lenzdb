@@ -14,6 +14,19 @@ def test_view_markdown(runner, example_project: Path) -> None:
     assert "Ship CLI skeleton" in result.stdout
 
 
+def test_view_table_output_is_not_duplicated(runner, example_project: Path) -> None:
+    result = runner.invoke(app, ["view", "open_tasks", "--project", str(example_project)])
+    assert result.exit_code == 0
+    assert result.stdout.count("Ship CLI skeleton") == 1
+
+
+def test_project_root_env_var(runner, example_project: Path, monkeypatch) -> None:
+    monkeypatch.setenv("LENZDB_PROJECT_ROOT", str(example_project))
+    result = runner.invoke(app, ["view", "open_tasks", "--format", "markdown"])
+    assert result.exit_code == 0
+    assert "Ship CLI skeleton" in result.stdout
+
+
 def test_check_and_explain(runner, example_project: Path) -> None:
     check_result = runner.invoke(app, ["check", "--project", str(example_project)])
     assert check_result.exit_code == 0

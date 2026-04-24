@@ -25,13 +25,13 @@ from lenzdb.project import Project
 from lenzdb.render import render_analysis, render_diff, render_plan, render_view
 
 app = typer.Typer(help="LenzDB CLI")
+PROJECT_ROOT_ENV_VAR = "LENZDB_PROJECT_ROOT"
 
 ProjectOption = Annotated[
     Path | None,
     typer.Option(
-        None,
         "--project",
-        help="Project root. Defaults to the current working directory.",
+        help=f"Project root. Defaults to ${PROJECT_ROOT_ENV_VAR}, then the current working directory.",
         exists=False,
         file_okay=False,
         dir_okay=True,
@@ -42,7 +42,10 @@ ProjectOption = Annotated[
 
 
 def load_project(project_root: Path | None) -> Project:
-    return Project.discover(project_root)
+    selected_root: Path | str | None = project_root
+    if selected_root is None:
+        selected_root = os.environ.get(PROJECT_ROOT_ENV_VAR) or None
+    return Project.discover(selected_root)
 
 
 def handle_errors(function):
@@ -54,7 +57,7 @@ def handle_errors(function):
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(code=1) from exc
 
-    wrapper.__signature__ = inspect.signature(function)
+    wrapper.__signature__ = inspect.signature(function, eval_str=True)
     return wrapper
 
 
@@ -132,7 +135,6 @@ def plan(lens_name: str, edited_csv: Path, project: ProjectOption = None) -> Non
 def apply(
     lens_name: str,
     edited_csv: Path,
-    yes: Annotated[bool, typer.Option(False, "--yes", help="Apply without prompting.")] = False,
     project: ProjectOption = None,
 ) -> None:
     project_instance = load_project(project)
@@ -141,8 +143,6 @@ def apply(
     if not mutation_plan.has_changes:
         typer.echo("No changes to apply.")
         return
-    if not yes and not typer.confirm("Apply these changes?"):
-        raise typer.Exit(code=1)
     apply_mutation_plan(project_instance, mutation_plan)
     typer.echo("Changes applied.")
 
@@ -151,8 +151,7 @@ def apply(
 @handle_errors
 def edit(
     lens_name: str,
-    editor: Annotated[str | None, typer.Option(None, "--editor", help="Override $EDITOR.")] = None,
-    yes: Annotated[bool, typer.Option(False, "--yes", help="Apply without prompting.")] = False,
+    editor: Annotated[str | None, typer.Option("--editor", help="Override $EDITOR.")] = None,
     project: ProjectOption = None,
 ) -> None:
     project_instance = load_project(project)
@@ -165,8 +164,6 @@ def edit(
     if not mutation_plan.has_changes:
         typer.echo("No changes to apply.")
         return
-    if not yes and not typer.confirm("Apply these changes?"):
-        raise typer.Exit(code=1)
     apply_mutation_plan(project_instance, mutation_plan)
     typer.echo("Changes applied.")
 
