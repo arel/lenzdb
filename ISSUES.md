@@ -24,7 +24,7 @@
 
 - [ ] how are ambiguous csv types handled (string/number/null) etc.? handled by duckdb?
 
-- [ ] on error after edit, can the broken file be preserved somewhere and re-editable? (not needed for apply?)
+- [x] On error after `lnz edit`, preserve the edited CSV under `.lenzdb/recovery/`, resume it on the next edit, and clear recovery files after a successful save.
 
 - [ ] add deletion logic for "edit"? (compare against original query)
 

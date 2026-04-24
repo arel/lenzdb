@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import csv
 import shlex
+import shutil
 import subprocess
 import tempfile
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +62,13 @@ class MutationPlan:
     @property
     def has_changes(self) -> bool:
         return bool(self.updates or self.inserts or self.reference_creations)
+
+
+@dataclass(slots=True)
+class EditResult:
+    plan: MutationPlan
+    recovery_path: Path
+    recovered_from: Path | None = None
 
 
 def snapshot_rows(columns: list[str], rows: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -438,6 +447,56 @@ def apply_mutation_plan(project: Project, plan: MutationPlan) -> MutationPlan:
     return plan
 
 
+def recovery_dir(project: Project) -> Path:
+    return project.root / ".lenzdb" / "recovery"
+
+
+def recovery_stem(resource_name: str) -> str:
+    return (
+        resource_name.replace("/", "_")
+        .replace("\\", "_")
+        .replace(":", "_")
+        .replace(" ", "_")
+    )
+
+
+def recovery_resource_name(project: Project, resource_name: str) -> str:
+    return project.resolve_resource_name(resource_name)[1]
+
+
+def recovery_glob(project: Project, resource_name: str) -> str:
+    return f"{recovery_stem(recovery_resource_name(project, resource_name))}-*.csv"
+
+
+def recovery_path(project: Project, resource_name: str) -> Path:
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    stem = recovery_stem(recovery_resource_name(project, resource_name))
+    return recovery_dir(project) / f"{stem}-{timestamp}.csv"
+
+
+def latest_recovery_path(project: Project, resource_name: str) -> Path | None:
+    directory = recovery_dir(project)
+    if not directory.exists():
+        return None
+    paths = sorted(directory.glob(recovery_glob(project, resource_name)))
+    return paths[-1] if paths else None
+
+
+def clear_recovery_files(project: Project, resource_name: str) -> None:
+    directory = recovery_dir(project)
+    if not directory.exists():
+        return
+    for path in directory.glob(recovery_glob(project, resource_name)):
+        path.unlink()
+
+
+def preserve_recovery_file(project: Project, resource_name: str, edited_path: Path) -> Path:
+    preserved_path = recovery_path(project, resource_name)
+    preserved_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(edited_path, preserved_path)
+    return preserved_path
+
+
 def export_lens_csv(project: Project, resource_name: str, target: Path) -> None:
     result = query_resource(project, resource_name)
     with target.open("w", encoding="utf-8", newline="") as handle:
@@ -457,10 +516,29 @@ def run_editor(editor: str, path: Path) -> None:
         raise MutationError(f"Editor command failed with exit code {exc.returncode}") from exc
 
 
-def edit_lens(project: Project, resource_name: str, editor: str) -> MutationPlan:
+def edit_lens(
+    project: Project,
+    resource_name: str,
+    editor: str,
+    *,
+    discard_recovery: bool = False,
+) -> EditResult:
     with tempfile.TemporaryDirectory(prefix="lenzdb-") as temp_dir:
         safe_name = resource_name.replace("/", "_").replace("\\", "_")
         temp_path = Path(temp_dir) / f"{safe_name}.csv"
-        export_lens_csv(project, resource_name, temp_path)
-        run_editor(editor, temp_path)
-        return build_mutation_plan(project, resource_name, temp_path)
+        recovered_from = None if discard_recovery else latest_recovery_path(project, resource_name)
+        if recovered_from is not None:
+            shutil.copy2(recovered_from, temp_path)
+        else:
+            export_lens_csv(project, resource_name, temp_path)
+        try:
+            run_editor(editor, temp_path)
+        except MutationError as exc:
+            preserved_path = preserve_recovery_file(project, resource_name, temp_path)
+            raise MutationError(f"{exc}\nEdited file preserved at: {preserved_path}") from exc
+        preserved_path = preserve_recovery_file(project, resource_name, temp_path)
+        try:
+            plan = build_mutation_plan(project, resource_name, temp_path)
+        except MutationError as exc:
+            raise MutationError(f"{exc}\nEdited file preserved at: {preserved_path}") from exc
+        return EditResult(plan=plan, recovery_path=preserved_path, recovered_from=recovered_from)

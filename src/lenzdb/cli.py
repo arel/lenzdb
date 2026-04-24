@@ -16,6 +16,7 @@ from lenzdb.errors import LenzError
 from lenzdb.planner import (
     apply_mutation_plan,
     build_mutation_plan,
+    clear_recovery_files,
     diff_snapshots,
     edit_lens,
     read_snapshot_csv,
@@ -304,6 +305,13 @@ def edit(
         typer.Argument(help="Table or lens name to edit.", autocompletion=complete_project_resource),
     ],
     editor: Annotated[str | None, typer.Option("--editor", help="Override $EDITOR.")] = None,
+    discard_recovery: Annotated[
+        bool,
+        typer.Option(
+            "--discard-recovery",
+            help="Ignore any preserved failed edit and start from current data.",
+        ),
+    ] = False,
     project: ProjectOption = None,
 ) -> None:
     project_instance = load_project(project)
@@ -311,12 +319,25 @@ def edit(
     if not editor_command:
         raise LenzError("No editor configured. Set $EDITOR or pass --editor.")
 
-    mutation_plan = edit_lens(project_instance, resource_name, editor_command)
+    edit_result = edit_lens(
+        project_instance,
+        resource_name,
+        editor_command,
+        discard_recovery=discard_recovery,
+    )
+    if edit_result.recovered_from is not None:
+        typer.echo(f"Recovered previous failed edit: {edit_result.recovered_from}")
+    mutation_plan = edit_result.plan
     typer.echo(render_plan(mutation_plan), nl=False)
     if not mutation_plan.has_changes:
+        clear_recovery_files(project_instance, resource_name)
         typer.echo("No changes to apply.")
         return
-    apply_mutation_plan(project_instance, mutation_plan)
+    try:
+        apply_mutation_plan(project_instance, mutation_plan)
+    except LenzError as exc:
+        raise LenzError(f"{exc}\nEdited file preserved at: {edit_result.recovery_path}") from exc
+    clear_recovery_files(project_instance, resource_name)
     typer.echo("Changes applied.")
 
 

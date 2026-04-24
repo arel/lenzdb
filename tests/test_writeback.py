@@ -180,3 +180,75 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
 
     tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
     assert "Refresh docs" in tasks_csv
+
+
+def test_edit_preserves_failed_edit_and_recovers_next_time(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    failing_editor = tmp_path / "fail_edit.sh"
+    failing_editor.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "path.write_text('id,title,status,project_name\\n"
+        "t-1,Ship CLI skeleton,todo,Core Platform\\n', encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    failing_editor.chmod(0o755)
+
+    failed_result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(failing_editor),
+        ],
+    )
+
+    assert failed_result.exit_code == 1
+    assert "Edited file preserved at:" in failed_result.stderr
+    recovery_files = sorted((example_project / ".lenzdb" / "recovery").glob("main.open_tasks-*.csv"))
+    assert len(recovery_files) == 1
+    assert "t-2" not in recovery_files[0].read_text(encoding="utf-8")
+
+    marker = tmp_path / "used_recovery"
+    recovering_editor = tmp_path / "recover_edit.sh"
+    recovering_editor.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$2\" \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "marker = Path(__import__('sys').argv[2])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "if 't-2' not in text:\n"
+        "    marker.write_text('yes', encoding='utf-8')\n"
+        "    text += 't-2,Write GETTING started docs,doing,Docs Refresh\\n'\n"
+        "text = text.replace('Ship CLI skeleton', 'Ship recovered edit')\n"
+        "path.write_text(text, encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    recovering_editor.chmod(0o755)
+
+    recovered_result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            f"{recovering_editor} {marker}",
+        ],
+    )
+
+    assert recovered_result.exit_code == 0
+    assert "Recovered previous failed edit:" in recovered_result.stdout
+    assert marker.read_text(encoding="utf-8") == "yes"
+    assert "Ship recovered edit" in (example_project / "tasks.csv").read_text(encoding="utf-8")
+    assert not list((example_project / ".lenzdb" / "recovery").glob("main.open_tasks-*.csv"))

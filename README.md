@@ -151,6 +151,11 @@ EDITOR=vim lnz edit open_tasks --project examples/basic
 your project files are versioned by Git, which is already a better adult
 supervision system than a prompt you answer from muscle memory.
 
+If `edit` fails after the editor opens, LenzDB preserves the edited CSV in
+`.lenzdb/recovery/`. The next `lnz edit RESOURCE` resumes the newest recovery
+file for that resource; pass `--discard-recovery` to start from current data
+instead. A successful edit clears the recovery files for that resource.
+
 ## Output Formats
 
 ```bash
