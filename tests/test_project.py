@@ -15,8 +15,33 @@ def test_project_discovery_and_validation(example_project: Path) -> None:
     project.validate()
 
 
+def test_hidden_data_and_lenses_are_discovered(example_project: Path) -> None:
+    hidden_data = example_project / ".lenzdb" / "data"
+    hidden_lenses = example_project / ".lenzdb" / "lenses"
+    hidden_data.mkdir()
+    hidden_lenses.mkdir()
+    (example_project / "projects.csv").rename(hidden_data / "projects.csv")
+    (example_project / "all_tasks.sql").rename(hidden_lenses / "all_tasks.sql")
+
+    project = Project.discover(example_project)
+
+    assert project.table_path("projects") == hidden_data / "projects.csv"
+    assert project.lenses["all_tasks"] == hidden_lenses / "all_tasks.sql"
+    project.validate()
+
+
+def test_legacy_layout_is_not_discovered(tmp_path: Path) -> None:
+    legacy_project = tmp_path / "legacy"
+    (legacy_project / "data").mkdir(parents=True)
+    (legacy_project / "schema").mkdir()
+    (legacy_project / "lenses").mkdir()
+
+    with pytest.raises(ProjectError, match=r"Missing schema directory: .*\.lenzdb/schema"):
+        Project.discover(legacy_project)
+
+
 def test_invalid_reference_is_rejected(example_project: Path) -> None:
-    data_path = example_project / "data" / "tasks.csv"
+    data_path = example_project / "tasks.csv"
     data_path.write_text(
         "id,title,status,project_id\n"
         "t-1,Ship CLI skeleton,todo,p-1\n"

@@ -61,7 +61,7 @@ def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> No
     plan = build_mutation_plan(project, "open_tasks", edited)
     apply_mutation_plan(project, plan)
 
-    tasks_csv = (example_project / "data" / "tasks.csv").read_text(encoding="utf-8")
+    tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
     assert "Ship production CLI" in tasks_csv
     assert "t-1,Ship production CLI,doing,p-1" in tasks_csv
 
@@ -79,7 +79,7 @@ def test_deletions_are_rejected(example_project: Path, tmp_path: Path) -> None:
 
 
 def test_computed_column_edits_are_rejected(example_project: Path, tmp_path: Path) -> None:
-    lens_path = example_project / "lenses" / "computed.sql"
+    lens_path = example_project / "computed.sql"
     lens_path.write_text(
         "select t.id, upper(t.title) as loud_title from tasks t where t.status != 'done'",
         encoding="utf-8",
@@ -140,5 +140,5 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
     assert "Changes applied." in edit_result.stdout
     assert "Apply these changes?" not in edit_result.stdout
 
-    tasks_csv = (example_project / "data" / "tasks.csv").read_text(encoding="utf-8")
+    tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
     assert "Refresh docs" in tasks_csv

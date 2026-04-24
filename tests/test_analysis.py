@@ -23,7 +23,7 @@ def test_analysis_classifies_columns(example_project: Path) -> None:
 
 
 def test_analysis_rejects_aggregate_lens(example_project: Path) -> None:
-    lens_path = example_project / "lenses" / "task_counts.sql"
+    lens_path = example_project / "task_counts.sql"
     lens_path.write_text(
         "select status, count(*) as task_count from tasks group by status",
         encoding="utf-8",
@@ -35,7 +35,7 @@ def test_analysis_rejects_aggregate_lens(example_project: Path) -> None:
 
 
 def test_analysis_rejects_unsafe_join(example_project: Path) -> None:
-    schema_path = example_project / "schema" / "comments.yaml"
+    schema_path = example_project / ".lenzdb" / "schema" / "comments.yaml"
     schema_path.write_text(
         "table: comments\n"
         "primary_key: id\n"
@@ -50,12 +50,12 @@ def test_analysis_rejects_unsafe_join(example_project: Path) -> None:
         "    type: string\n",
         encoding="utf-8",
     )
-    data_path = example_project / "data" / "comments.csv"
+    data_path = example_project / "comments.csv"
     data_path.write_text(
         "id,task_id,body\nc-1,t-1,First\nc-2,t-1,Second\n",
         encoding="utf-8",
     )
-    lens_path = example_project / "lenses" / "task_comments.sql"
+    lens_path = example_project / "task_comments.sql"
     lens_path.write_text(
         "select t.id, c.body from tasks t join comments c on c.task_id = t.id",
         encoding="utf-8",

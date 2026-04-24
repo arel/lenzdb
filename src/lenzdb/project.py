@@ -96,10 +96,9 @@ def clone_rows_map(
 @dataclass(slots=True)
 class Project:
     root: Path
-    data_dir: Path
     schema_dir: Path
-    lenses_dir: Path
     policies_dir: Path
+    table_paths: dict[str, Path]
     schemas: dict[str, TableSchema]
     lenses: dict[str, Path]
     policies: dict[str, LensPolicy]
@@ -107,28 +106,25 @@ class Project:
     @classmethod
     def discover(cls, root: str | Path | None = None) -> Project:
         project_root = Path(root or Path.cwd()).resolve()
-        data_dir = project_root / "data"
-        schema_dir = project_root / "schema"
-        lenses_dir = project_root / "lenses"
-        policies_dir = project_root / "policies"
+        lenz_dir = project_root / ".lenzdb"
+        data_dir = lenz_dir / "data"
+        schema_dir = lenz_dir / "schema"
+        lenses_dir = lenz_dir / "lenses"
+        policies_dir = lenz_dir / "policies"
 
         if not schema_dir.exists():
             raise ProjectError(f"Missing schema directory: {schema_dir}")
-        if not lenses_dir.exists():
-            raise ProjectError(f"Missing lenses directory: {lenses_dir}")
-        if not data_dir.exists():
-            raise ProjectError(f"Missing data directory: {data_dir}")
 
         schemas = cls._load_schemas(schema_dir)
-        lenses = cls._load_lenses(lenses_dir)
+        table_paths = cls._load_tables(project_root, data_dir)
+        lenses = cls._load_lenses(project_root, lenses_dir)
         policies = cls._load_policies(policies_dir)
 
         project = cls(
             root=project_root,
-            data_dir=data_dir,
             schema_dir=schema_dir,
-            lenses_dir=lenses_dir,
             policies_dir=policies_dir,
+            table_paths=table_paths,
             schemas=schemas,
             lenses=lenses,
             policies=policies,
@@ -154,10 +150,41 @@ class Project:
         return schemas
 
     @classmethod
-    def _load_lenses(cls, lenses_dir: Path) -> dict[str, Path]:
-        lenses = {path.stem: path for path in sorted(lenses_dir.glob("*.sql"))}
+    def _load_tables(cls, project_root: Path, data_dir: Path) -> dict[str, Path]:
+        table_paths: dict[str, Path] = {}
+        for source_dir in [project_root, data_dir]:
+            if not source_dir.exists():
+                continue
+            for path in sorted(source_dir.glob("*.csv")):
+                table_name = path.stem
+                if table_name in table_paths:
+                    raise ProjectError(
+                        f"Duplicate CSV table {table_name!r}: {table_paths[table_name]} and {path}"
+                    )
+                table_paths[table_name] = path
+        if not table_paths:
+            raise ProjectError(
+                f"No CSV table files found in {project_root} or {data_dir}"
+            )
+        return table_paths
+
+    @classmethod
+    def _load_lenses(cls, project_root: Path, lenses_dir: Path) -> dict[str, Path]:
+        lenses: dict[str, Path] = {}
+        for source_dir in [project_root, lenses_dir]:
+            if not source_dir.exists():
+                continue
+            for path in sorted(source_dir.glob("*.sql")):
+                lens_name = path.stem
+                if lens_name in lenses:
+                    raise ProjectError(
+                        f"Duplicate lens {lens_name!r}: {lenses[lens_name]} and {path}"
+                    )
+                lenses[lens_name] = path
         if not lenses:
-            raise ProjectError(f"No lens SQL files found in {lenses_dir}")
+            raise ProjectError(
+                f"No lens SQL files found in {project_root} or {lenses_dir}"
+            )
         return lenses
 
     @classmethod
@@ -188,7 +215,10 @@ class Project:
         return self.policies.get(lens_name)
 
     def table_path(self, table: str) -> Path:
-        return self.data_dir / f"{table}.csv"
+        try:
+            return self.table_paths[table]
+        except KeyError as exc:
+            raise ProjectError(f"Unknown table {table!r}") from exc
 
     def table_headers(self, table: str) -> list[str]:
         return list(self.schema_for(table).columns)
@@ -246,6 +276,13 @@ class Project:
         return {table: self.load_table_rows(table) for table in self.schemas}
 
     def validate_configuration(self) -> None:
+        missing_tables = sorted(table for table in self.schemas if table not in self.table_paths)
+        extra_tables = sorted(table for table in self.table_paths if table not in self.schemas)
+        if missing_tables or extra_tables:
+            raise ProjectError(
+                f"CSV/schema mismatch: missing_csv={missing_tables or '[]'}, extra_csv={extra_tables or '[]'}"
+            )
+
         for table, schema in self.schemas.items():
             for column_name, column in schema.columns.items():
                 if column.type == "ref":

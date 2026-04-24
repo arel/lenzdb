@@ -88,21 +88,19 @@ Lint/format:     ruff
 
 ```text
 my-project/
-  data/
-    tasks.csv
-    projects.csv
+  tasks.csv
+  projects.csv
+  open_tasks.sql
+  kanban.sql
 
-  schema/
-    tasks.yaml
-    projects.yaml
+  .lenzdb/
+    schema/
+      tasks.yaml
+      projects.yaml
 
-  lenses/
-    open_tasks.sql
-    kanban.sql
-
-  policies/
-    open_tasks.yaml
-    kanban.yaml
+    policies/
+      open_tasks.yaml
+      kanban.yaml
 ```
 
 ---
@@ -365,7 +363,7 @@ The core CLI in this repository is implemented.
 Included in v1:
 
 * pip-installable Python package (`lenzdb`)
-* zero-config project discovery from `data/`, `schema/`, `lenses/`, `policies/`
+* zero-config project discovery from root CSV/SQL files and project-local `.lenzdb/` metadata
 * CSV-backed tables
 * `lnz view`, `check`, `explain`, `diff`, `plan`, `apply`, and `edit`
 * safe updates and inserts for writable lenses
