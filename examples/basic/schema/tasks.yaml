@@ -1,0 +1,14 @@
+table: tasks
+primary_key: id
+columns:
+  id:
+    type: string
+    immutable: true
+  title:
+    type: string
+  status:
+    type: enum
+    values: [todo, doing, done]
+  project_id:
+    type: ref
+    table: projects

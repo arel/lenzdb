@@ -358,7 +358,67 @@ Reject edits if:
 
 ---
 
-Notes:
+# 20. ✅ V1 Status
 
-* scaffold the repo (`uv init`, CLI skeleton)?
-* implement `lnz view` against DuckDB first?
+The core CLI in this repository is implemented.
+
+Included in v1:
+
+* pip-installable Python package (`lenzdb`)
+* zero-config project discovery from `data/`, `schema/`, `lenses/`, `policies/`
+* CSV-backed tables
+* `lnz view`, `check`, `explain`, `diff`, `plan`, `apply`, and `edit`
+* safe updates and inserts for writable lenses
+* policy-driven reference resolution and optional related-row creation
+* table, csv, json, ndjson, markdown, and html output formats
+
+Out of scope in v1:
+
+* board / kanban rendering
+* plugin system
+* UI
+* JSON writeback
+
+---
+
+# 21. 🚀 Quickstart
+
+Install locally:
+
+```bash
+pip install .
+```
+
+For development:
+
+```bash
+pip install -e .[dev]
+```
+
+Run the bundled example project:
+
+```bash
+lnz check --project examples/basic
+lnz view open_tasks --project examples/basic
+lnz explain open_tasks --project examples/basic
+lnz view open_tasks --project examples/basic --format csv > /tmp/open_tasks.csv
+lnz plan open_tasks /tmp/open_tasks.csv --project examples/basic
+lnz apply open_tasks /tmp/open_tasks.csv --project examples/basic
+```
+
+Interactive edit flow:
+
+```bash
+EDITOR=vim lnz edit open_tasks --project examples/basic
+```
+
+---
+
+# 22. 🧪 Development
+
+Run the checks:
+
+```bash
+ruff check .
+pytest
+```
