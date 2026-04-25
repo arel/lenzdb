@@ -26,43 +26,30 @@
 
 - [x] Be able to `view` CSV data files as well as lenses, including shell completion sources.
 
-- [x] Add `lnz list` for namespaces, tables, lenses, and paths, with optional `--with-status/-s`.
+- [x] Add `lnz list` for namespaces, tables, lenses, paths, and state, with optional `--check/-c`.
 
 - [x] Treat CSV tables as identity-lens resources for `view`, `explain`, `diff`, `plan`, `apply`, and `edit`.
 
 - [x] Add `view` inline options for SQL, filter, selected columns, order, count rows, limit, offset, and page with `view.page_size` defaulting to 100.
 
 - [x] Fix missing project folder error:
-vscode ➜ /workspaces/lenz-db (Arel/initial-project-skeleton) $ lnz view all_tasks
-Error: Missing schema directory: /workspaces/lenz-db/.lenzdb/schema
+vscode ➜ /workspaces/lenzdb (Arel/initial-project-skeleton) $ lnz view all_tasks
+Error: Missing schema directory: /workspaces/lenzdb/.lenzdb/schema
 
 - [x] Fix CSV output/writeback line endings to use `\n`.
 -id,title,status,project_id
 +id,title,status,project_id^M
 
-- [ ] defining PK? default behavior `id` column? first column? compound columns? defined in config somewhere?
+- [x] defining PK? default behavior `id` column? first column? compound columns? defined in config somewhere?
 
-- [ ] command to create PK column?
+- [x] how are ambiguous csv types handled (string/number/null) etc.? handled by duckdb?
 
-- [ ] how are ambiguous csv types handled (string/number/null) etc.? handled by duckdb?
+- [x] add deletion logic for "edit"? (compare against original query) -- won't do
 
-- [ ] add deletion logic for "edit"? (compare against original query)
+- [ ] multi-column PKs? -- separate feature branch
+
+- [x] Naming is consistent: product/docs `LenzDB`, package/repo `lenzdb`, CLI `lnz`, concept `lens`/`lenses`.
 
 - [ ] update README with less disjointed humor (stick to one universal less nerdy theme)
 
-- [ ] multi-column PKs?
-
-- [ ] rename to lnz to lenz?
-
-- [ ] use $LENZDB_EDITOR in addition to $EDITOR?
-
-- [ ] refactor:
-
-    lnz list
-    Error: CSV/schema mismatch: missing_csv=[], extra_csv=['bar.snoo']
-
-    - no hard error if missing_csv. Instead, the status should be 'missing' if showing status
-
-    - on extra_csv:
-        - `list` should not error either; it should show something like 'untracked' and after output a STDERR message could say to add the missing tables with `lnz add [table]`
-        - maybe there should be a command `add` that adds and tracks a csv (by creating a matching schema with good defaults, including asking for PK column name interactively unless passed in with arg.
+- [x] refactor lnz list

@@ -8,6 +8,9 @@ those lenses, edit exported rows, and safely write supported changes back to the
 source CSV files. The files stay text. Git keeps doing Git things. Nobody has to
 pretend a spreadsheet is a database, which is restful in its own small way.
 
+LenzDB is installed as the Python package `lenzdb` and used from the command
+line as `lnz`. A lens is the saved SQL view concept inside a LenzDB project.
+
 ## Why
 
 - Keep data in boring, diffable CSV files.

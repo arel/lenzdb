@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "lenz-db"
+name = "lenzdb"
 version = "0.1.0"
 description = "Git-native, text-first relational lenses with safe writeback."
 readme = "README.md"
