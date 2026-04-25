@@ -10,6 +10,13 @@
 	},
 	"containerEnv": {
 		"LENZDB_EDITOR": "code --wait"
+	},
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"openai.chatgpt"
+			]
+		}
 	}
 
 	// Features to add to the dev container. More info: https://containers.dev/features.
