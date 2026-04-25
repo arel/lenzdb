@@ -14,7 +14,8 @@
 	"customizations": {
 		"vscode": {
 			"extensions": [
-				"openai.chatgpt"
+				"openai.chatgpt",
+				"mechatroner.rainbow-csv"
 			]
 		}
 	}

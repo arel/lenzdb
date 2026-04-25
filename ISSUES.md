@@ -62,6 +62,6 @@ Error: Missing schema directory: /workspaces/lenzdb/.lenzdb/schema
 
 - [x] add --distinct flag to `lnz view` that takes a list of column names and returns the distinct values for those columns
 
-- [ ] add multi-column PKs feature -- in a separate feature branch
+- [x] add multi-column PKs feature -- in a separate feature branch
 
 - [ ] add support for other input/output formats such as JSON, JSONL, tsv?

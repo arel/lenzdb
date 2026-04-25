@@ -225,6 +225,13 @@ columns:
     table: projects
 ```
 
+For composite primary keys, use a list:
+
+```yaml
+table: memberships
+primary_key: [org_id, user_id]
+```
+
 ## Lens Sketch
 
 ```sql

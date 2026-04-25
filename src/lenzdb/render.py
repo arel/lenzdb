@@ -99,11 +99,16 @@ def render_view(columns: list[str], rows: list[dict[str, Any]], output_format: s
 
 
 def render_analysis(analysis: LensAnalysis) -> str:
+    primary_key_output = (
+        ", ".join(analysis.primary_key_outputs)
+        if analysis.primary_key_outputs
+        else analysis.primary_key_output or "(missing)"
+    )
     lines = [
         f"Resource: {analysis.lens_name}",
         f"Primary table: {analysis.primary_table or 'unknown'}",
         f"Writable: {'yes' if analysis.writable else 'no'}",
-        f"Primary key output: {analysis.primary_key_output or '(missing)'}",
+        f"Primary key output: {primary_key_output}",
         "",
         "Columns:",
     ]

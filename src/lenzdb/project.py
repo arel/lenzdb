@@ -113,6 +113,10 @@ def serialize_value(value: Any, column: ColumnSchema | None = None) -> str:
     return str(value)
 
 
+def normalize_primary_key(primary_key: str | list[str]) -> list[str]:
+    return [primary_key] if isinstance(primary_key, str) else list(primary_key)
+
+
 def clone_rows_map(
     rows_by_table: dict[str, list[dict[str, Any]]],
 ) -> dict[str, list[dict[str, Any]]]:
@@ -528,16 +532,39 @@ class Project:
     def table_headers(self, table: str) -> list[str]:
         return list(self.schema_for(table).columns)
 
+    def primary_key_columns(self, table: str) -> list[str]:
+        return normalize_primary_key(self.schema_for(table).primary_key)
+
+    def is_primary_key_column(self, table: str, column_name: str) -> bool:
+        return column_name in self.primary_key_columns(table)
+
+    def primary_key_tuple(self, table: str, row: dict[str, Any]) -> tuple[str, ...]:
+        schema = self.schema_for(table)
+        return tuple(
+            serialize_value(row.get(column_name), schema.columns[column_name])
+            for column_name in normalize_primary_key(schema.primary_key)
+        )
+
+    def primary_key_display(self, table: str, row: dict[str, Any]) -> str:
+        values = self.primary_key_tuple(table, row)
+        if len(values) == 1:
+            return values[0]
+        return " | ".join(values)
+
     def blank_row(self, table: str) -> dict[str, Any]:
         schema = self.schema_for(table)
         return {column_name: None for column_name in schema.columns}
 
     def generate_primary_key(self, table: str) -> str:
         schema = self.schema_for(table)
-        column = schema.columns[schema.primary_key]
+        primary_keys = normalize_primary_key(schema.primary_key)
+        if len(primary_keys) != 1:
+            raise MutationError(f"Cannot auto-generate composite primary keys for {table}")
+        primary_key = primary_keys[0]
+        column = schema.columns[primary_key]
         if column.type != "string":
             raise MutationError(
-                f"Cannot auto-generate primary keys for non-string column {table}.{schema.primary_key}"
+                f"Cannot auto-generate primary keys for non-string column {table}.{primary_key}"
             )
         return str(uuid4())
 
@@ -604,13 +631,19 @@ class Project:
                         raise ProjectError(
                             f"Column {table}.{column_name} references missing table {column.table!r}"
                         )
+                    referenced_primary_key = normalize_primary_key(referenced_schema.primary_key)
+                    if len(referenced_primary_key) != 1:
+                        raise ProjectError(
+                            f"Column {table}.{column_name} references composite-key table "
+                            f"{referenced_table!r}, which is not supported"
+                        )
 
         for lens_name, policy in self.policies.items():
             if lens_name not in self.lenses:
                 raise ProjectError(f"Policy references missing lens {lens_name!r}")
             primary_table = self.resolve_table_name(policy.primary_table)
             schema = self.schema_for(primary_table)
-            if policy.primary_key != schema.primary_key:
+            if normalize_primary_key(policy.primary_key) != normalize_primary_key(schema.primary_key):
                 raise ProjectError(
                     f"Policy {lens_name!r} primary key {policy.primary_key!r} does not match "
                     f"schema primary key {schema.primary_key!r}"
@@ -659,21 +692,26 @@ class Project:
                     )
 
     def validate_rows_map(self, rows_by_table: dict[str, list[dict[str, Any]]]) -> None:
-        referenced_keys: dict[str, set[str]] = {}
+        referenced_keys: dict[str, set[tuple[str, ...]]] = {}
         for table, rows in rows_by_table.items():
             schema = self.schema_for(table)
-            primary_column = schema.columns[schema.primary_key]
-            seen: set[str] = set()
+            primary_keys = normalize_primary_key(schema.primary_key)
+            seen: set[tuple[str, ...]] = set()
             for row in rows:
-                raw_key = row.get(schema.primary_key)
-                serialized_key = serialize_value(raw_key, primary_column)
-                if serialized_key == "":
+                serialized_key = self.primary_key_tuple(table, row)
+                missing_columns = [
+                    column_name
+                    for column_name, value in zip(primary_keys, serialized_key, strict=True)
+                    if value == ""
+                ]
+                if missing_columns:
                     raise ProjectError(
-                        f"Row in {table!r} is missing primary key {schema.primary_key!r}"
+                        f"Row in {table!r} is missing primary key column(s) "
+                        f"{', '.join(missing_columns)}"
                     )
                 if serialized_key in seen:
                     raise ProjectError(
-                        f"Duplicate primary key {serialized_key!r} in table {table!r}"
+                        f"Duplicate primary key {self.primary_key_display(table, row)!r} in table {table!r}"
                     )
                 seen.add(serialized_key)
             referenced_keys[table] = seen
@@ -690,7 +728,7 @@ class Project:
                     if column.type == "ref" and value is not None:
                         lookup_key = serialize_value(value, column)
                         referenced_table = self.resolve_table_name(column.table or "")
-                        if lookup_key not in referenced_keys[referenced_table]:
+                        if (lookup_key,) not in referenced_keys[referenced_table]:
                             raise ProjectError(
                                 f"Invalid reference {table}.{column_name}={lookup_key!r}: "
                                 f"missing row in {referenced_table!r}"

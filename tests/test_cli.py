@@ -526,6 +526,61 @@ def test_add_csv_path_is_resolved_from_current_dir(
     assert (example_project / ".lenzdb" / "schema" / "main.pear.yaml").exists()
 
 
+def test_add_csv_with_composite_primary_key(runner, example_project: Path) -> None:
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-2,member\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "memberships",
+            "--primary-key",
+            "org_id,user_id",
+            "--project",
+            str(example_project),
+        ],
+    )
+
+    assert result.exit_code == 0
+    schema = (example_project / ".lenzdb" / "schema" / "main.memberships.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "primary_key:\n- org_id\n- user_id\n" in schema
+    assert "org_id:\n    type: string\n    immutable: true\n" in schema
+    assert "user_id:\n    type: string\n    immutable: true\n" in schema
+
+
+def test_add_csv_rejects_duplicate_composite_primary_key(
+    runner, example_project: Path
+) -> None:
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-1,member\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "memberships",
+            "--primary-key",
+            "org_id,user_id",
+            "--project",
+            str(example_project),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "duplicate value 'o-1 | u-1'" in result.stderr
+
+
 def test_explain_table_resource(runner, example_project: Path) -> None:
     result = runner.invoke(app, ["explain", "tasks", "--project", str(example_project)])
     assert result.exit_code == 0

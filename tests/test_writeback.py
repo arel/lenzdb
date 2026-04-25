@@ -10,6 +10,29 @@ from lenzdb.planner import apply_mutation_plan, build_mutation_plan
 from lenzdb.project import Project
 
 
+def add_memberships_table(example_project: Path) -> None:
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-2,member\n",
+        encoding="utf-8",
+    )
+    (example_project / ".lenzdb" / "schema" / "memberships.yaml").write_text(
+        "table: memberships\n"
+        "primary_key: [org_id, user_id]\n"
+        "columns:\n"
+        "  org_id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  user_id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  role:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+
+
 def test_plan_updates_existing_rows(example_project: Path, tmp_path: Path) -> None:
     edited = tmp_path / "edited.csv"
     edited.write_text(
@@ -87,6 +110,93 @@ def test_table_resource_plan_and_apply(example_project: Path, tmp_path: Path) ->
     apply_mutation_plan(project, plan)
     tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
     assert "t-1,Ship production CLI,doing,p-1" in tasks_csv
+
+
+def test_composite_key_table_resource_plan_and_apply(
+    example_project: Path, tmp_path: Path
+) -> None:
+    add_memberships_table(example_project)
+    edited = tmp_path / "memberships.csv"
+    edited.write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,owner\n"
+        "o-1,u-2,member\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    plan = build_mutation_plan(project, "memberships", edited)
+
+    assert plan.primary_key_outputs == ["org_id", "user_id"]
+    assert len(plan.updates) == 1
+    assert plan.updates[0].key == "o-1 | u-1"
+    assert plan.updates[0].changes == {"role": "owner"}
+
+    apply_mutation_plan(project, plan)
+    memberships_csv = (example_project / "memberships.csv").read_text(encoding="utf-8")
+    assert "o-1,u-1,owner" in memberships_csv
+
+
+def test_composite_key_table_resource_inserts_require_all_key_values(
+    example_project: Path, tmp_path: Path
+) -> None:
+    add_memberships_table(example_project)
+    edited = tmp_path / "memberships.csv"
+    edited.write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-2,member\n"
+        "o-2,,member\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    with pytest.raises(MutationError, match="must supply primary key output"):
+        build_mutation_plan(project, "memberships", edited)
+
+
+def test_composite_key_table_resource_rejects_key_edits(
+    example_project: Path, tmp_path: Path
+) -> None:
+    add_memberships_table(example_project)
+    edited = tmp_path / "memberships.csv"
+    edited.write_text(
+        "org_id,user_id,role\n"
+        "o-2,u-1,admin\n"
+        "o-1,u-2,member\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    with pytest.raises(MutationError, match="Deleting rows"):
+        build_mutation_plan(project, "memberships", edited)
+
+
+def test_composite_key_lens_plan_and_apply(example_project: Path, tmp_path: Path) -> None:
+    add_memberships_table(example_project)
+    (example_project / "membership_roles.sql").write_text(
+        "select org_id, user_id, role from memberships\n",
+        encoding="utf-8",
+    )
+    edited = tmp_path / "membership_roles.csv"
+    edited.write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-2,owner\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    plan = build_mutation_plan(project, "membership_roles", edited)
+
+    assert len(plan.updates) == 1
+    assert plan.updates[0].key == "o-1 | u-2"
+    assert plan.updates[0].changes == {"role": "owner"}
+
+    apply_mutation_plan(project, plan)
+    assert "o-1,u-2,owner" in (example_project / "memberships.csv").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_table_resource_rejects_primary_key_edits(example_project: Path, tmp_path: Path) -> None:
