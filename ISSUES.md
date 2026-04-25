@@ -50,6 +50,8 @@ Error: Missing schema directory: /workspaces/lenzdb/.lenzdb/schema
 
 - [x] Naming is consistent: product/docs `LenzDB`, package/repo `lenzdb`, CLI `lnz`, concept `lens`/`lenses`.
 
-- [ ] update README with less disjointed humor (stick to one universal less nerdy theme)
+- [x] update README with less disjointed and techy humor -- only add a witty comment if it truly begs for it.
+
+- [x] accept `$LENZDB_EDITOR` with precedence between `--editor` and `$EDITOR`.
 
 - [x] refactor lnz list

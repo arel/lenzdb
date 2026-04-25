@@ -38,6 +38,8 @@ from lenzdb.render import render_analysis, render_diff, render_plan, render_view
 
 app = typer.Typer(help="LenzDB CLI")
 PROJECT_ROOT_ENV_VAR = "LENZDB_PROJECT_ROOT"
+EDITOR_ENV_VAR = "LENZDB_EDITOR"
+FALLBACK_EDITOR_ENV_VAR = "EDITOR"
 
 ProjectOption = Annotated[
     Path | None,
@@ -682,7 +684,10 @@ def edit(
         str,
         typer.Argument(help="Table or lens name to edit.", autocompletion=complete_project_resource),
     ],
-    editor: Annotated[str | None, typer.Option("--editor", help="Override $EDITOR.")] = None,
+    editor: Annotated[
+        str | None,
+        typer.Option("--editor", help=f"Override ${EDITOR_ENV_VAR} and ${FALLBACK_EDITOR_ENV_VAR}."),
+    ] = None,
     discard_recovery: Annotated[
         bool,
         typer.Option(
@@ -693,9 +698,16 @@ def edit(
     project: ProjectOption = None,
 ) -> None:
     project_instance = load_project(project, validate_configuration=False)
-    editor_command = editor or os.environ.get("EDITOR")
+    editor_command = (
+        editor
+        or os.environ.get(EDITOR_ENV_VAR)
+        or os.environ.get(FALLBACK_EDITOR_ENV_VAR)
+    )
     if not editor_command:
-        raise LenzError("No editor configured. Set $EDITOR or pass --editor.")
+        raise LenzError(
+            f"No editor configured. Set ${EDITOR_ENV_VAR}, set ${FALLBACK_EDITOR_ENV_VAR}, "
+            "or pass --editor."
+        )
 
     edit_result = edit_lens(
         project_instance,

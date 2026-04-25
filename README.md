@@ -1,12 +1,10 @@
 # LenzDB
 
-LenzDB is a tiny, Git-native data tool for people who like CSV files but would
-prefer not to experience them one VLOOKUP at a time.
+LenzDB is a small, Git-native data tool for CSV-backed project data.
 
 It lets you define SQL views, called lenses, over plain CSV data. You can inspect
 those lenses, edit exported rows, and safely write supported changes back to the
-source CSV files. The files stay text. Git keeps doing Git things. Nobody has to
-pretend a spreadsheet is a database, which is restful in its own small way.
+source CSV files. The files stay text, and Git can track normal diffs.
 
 LenzDB is installed as the Python package `lenzdb` and used from the command
 line as `lnz`. A lens is the saved SQL view concept inside a LenzDB project.
@@ -19,10 +17,9 @@ line as `lnz`. A lens is the saved SQL view concept inside a LenzDB project.
 - Review changes with normal Git diffs.
 - Edit a projection and write safe changes back to the source rows.
 
-LenzDB is not trying to replace Postgres. Postgres is busy and has a family.
-This is for small project data, operational notes, lightweight catalogs,
-curated datasets, and other places where a real database is too much ceremony
-but raw CSVs are a little too haunted.
+LenzDB is for small project data, operational notes, lightweight catalogs,
+curated datasets, and other places where a full database is more ceremony than
+the job needs.
 
 ## Install
 
@@ -90,7 +87,7 @@ view:
 
 Folders and globs must specify a namespace. Single registered files may omit one
 and will use `main`. `view.page_size` controls `lnz view --page`; when omitted,
-it defaults to `100`, because someone has to be the sensible one.
+it defaults to `100`.
 
 ## Namespaces
 
@@ -103,8 +100,7 @@ select * from acme.tasks;
 ```
 
 Unqualified names work only when they are unambiguous. If both `main.tasks` and
-`acme.tasks` exist, `tasks` is rejected and LenzDB asks you to be precise. A
-small price to pay for not discovering later that you edited the wrong Tuesday.
+`acme.tasks` exist, `tasks` is rejected and LenzDB asks you to be precise.
 
 ## Usage
 
@@ -128,14 +124,14 @@ lnz explain open_tasks --project examples/basic
 `view`, `explain`, `diff`, `plan`, `apply`, and `edit` accept either a lens or
 a table name. CSV tables behave like they have an implicit identity lens, so
 `tasks.csv` is roughly `select * from tasks`. Table and lens names must be
-distinct; guessing is how a Tuesday becomes paperwork.
+distinct.
 
 `lnz view` has convenience flags for quick inspection. `--columns` chooses a
 comma-separated set of output columns, `--filter` accepts a SQL `WHERE` fragment,
 and `--order` accepts comma-separated columns with a `-` prefix for descending
-sorts. `--page` uses the project page size, while `--limit` and `--offset` do
-exactly what they say on the tin. `--sql` is the escape hatch: it runs a SQL
-query where the selected table or lens is available as `resource`.
+sorts. `--page` uses the project page size. `--limit` and `--offset` control
+the returned row range. `--sql` runs a SQL query where the selected table or
+lens is available as `resource`.
 
 Export a lens, edit it, and preview the writeback plan:
 
@@ -164,12 +160,14 @@ lnz apply open_tasks /tmp/open_tasks.csv --project examples/basic
 Or let LenzDB open the editor for you:
 
 ```bash
-EDITOR=vim lnz edit open_tasks --project examples/basic
+LENZDB_EDITOR=vim lnz edit open_tasks --project examples/basic
 ```
 
-`apply` and `edit` do not ask a final `y/N` question. The assumption is that
-your project files are versioned by Git, which is already a better adult
-supervision system than a prompt you answer from muscle memory.
+`lnz edit` chooses an editor in this order: `--editor`, `$LENZDB_EDITOR`, then
+`$EDITOR`.
+
+`apply` and `edit` do not ask a final `y/N` question. Keep project files under
+version control so data changes can be reviewed and reverted normally.
 
 If `edit` fails after the editor opens, LenzDB preserves the edited CSV in
 `.lenzdb/recovery/`. The next `lnz edit RESOURCE` resumes the newest recovery
@@ -252,5 +250,4 @@ python -m ruff check .
 
 ## License
 
-MIT. Do something useful with it. Preferably something with fewer tabs named
-`final_final_really.csv`.
+MIT.

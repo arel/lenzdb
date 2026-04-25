@@ -182,6 +182,33 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
     assert "Refresh docs" in tasks_csv
 
 
+def test_edit_prefers_lenzdb_editor_over_editor(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    editor_script = tmp_path / "lenzdb_edit.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "path.write_text(text.replace('Ship CLI skeleton', 'Ship env edit'), encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        ["edit", "open_tasks", "--project", str(example_project)],
+        env={"LENZDB_EDITOR": str(editor_script), "EDITOR": "false"},
+    )
+
+    assert result.exit_code == 0
+    assert "Changes applied." in result.stdout
+    assert "Ship env edit" in (example_project / "tasks.csv").read_text(encoding="utf-8")
+
+
 def test_edit_preserves_failed_edit_and_recovers_next_time(
     runner, example_project: Path, tmp_path: Path
 ) -> None:
