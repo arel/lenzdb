@@ -15,6 +15,92 @@ def test_project_discovery_and_validation(example_project: Path) -> None:
     project.validate()
 
 
+def test_composite_primary_key_validates_unique_tuples(example_project: Path) -> None:
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-2,member\n",
+        encoding="utf-8",
+    )
+    (example_project / ".lenzdb" / "schema" / "memberships.yaml").write_text(
+        "table: memberships\n"
+        "primary_key: [org_id, user_id]\n"
+        "columns:\n"
+        "  org_id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  user_id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  role:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+
+    assert project.primary_key_columns("memberships") == ["org_id", "user_id"]
+    project.validate()
+
+
+def test_composite_primary_key_rejects_blank_and_duplicate_tuples(example_project: Path) -> None:
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-1,member\n",
+        encoding="utf-8",
+    )
+    (example_project / ".lenzdb" / "schema" / "memberships.yaml").write_text(
+        "table: memberships\n"
+        "primary_key:\n"
+        "  - org_id\n"
+        "  - user_id\n"
+        "columns:\n"
+        "  org_id:\n"
+        "    type: string\n"
+        "  user_id:\n"
+        "    type: string\n"
+        "  role:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    with pytest.raises(ProjectError, match="Duplicate primary key"):
+        project.validate()
+
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,,admin\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ProjectError, match="missing primary key column"):
+        Project.discover(example_project).validate()
+
+
+def test_composite_primary_key_rejects_missing_schema_columns(example_project: Path) -> None:
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n",
+        encoding="utf-8",
+    )
+    (example_project / ".lenzdb" / "schema" / "memberships.yaml").write_text(
+        "table: memberships\n"
+        "primary_key: [org_id, missing_id]\n"
+        "columns:\n"
+        "  org_id:\n"
+        "    type: string\n"
+        "  user_id:\n"
+        "    type: string\n"
+        "  role:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing_id"):
+        Project.discover(example_project)
+
+
 def test_hidden_data_and_lenses_are_discovered(example_project: Path) -> None:
     hidden_data = example_project / ".lenzdb" / "data"
     hidden_lenses = example_project / ".lenzdb" / "lenses"

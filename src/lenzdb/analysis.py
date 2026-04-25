@@ -39,6 +39,7 @@ class LensAnalysis:
     primary_table: str | None
     primary_alias: str | None
     primary_key_output: str | None
+    primary_key_outputs: list[str]
     columns: list[AnalyzedColumn]
     writable: bool
     reasons: list[str] = field(default_factory=list)
@@ -97,8 +98,6 @@ def safe_join_reason(
         return False, "join is missing an ON clause"
 
     primary_schema = project.schema_for(primary_table)
-    join_schema = project.schema_for(join_table)
-
     for condition in split_and(join_on):
         if not isinstance(condition, exp.EQ):
             continue
@@ -124,7 +123,8 @@ def safe_join_reason(
             continue
         if project.resolve_table_name(primary_column.table or "") != join_table:
             continue
-        if join_column_name != join_schema.primary_key:
+        join_primary_keys = project.primary_key_columns(join_table)
+        if len(join_primary_keys) != 1 or join_column_name != join_primary_keys[0]:
             continue
 
         return True, (
@@ -151,10 +151,12 @@ def _column_reason(kind: ColumnKind) -> str:
 def analyze_table(project: Project, table_name: str) -> LensAnalysis:
     resolved_table = project.resolve_table_name(table_name)
     schema = project.schema_for(resolved_table)
+    primary_keys = project.primary_key_columns(resolved_table)
     columns: list[AnalyzedColumn] = []
     for column_name, column_schema in schema.columns.items():
-        writable = not column_schema.immutable and column_name != schema.primary_key
-        if column_name == schema.primary_key:
+        is_primary_key = column_name in primary_keys
+        writable = not column_schema.immutable and not is_primary_key
+        if is_primary_key:
             reason = "primary key updates are not supported"
         elif column_schema.immutable:
             reason = "column is immutable in schema"
@@ -174,7 +176,8 @@ def analyze_table(project: Project, table_name: str) -> LensAnalysis:
         lens_name=resolved_table,
         primary_table=resolved_table,
         primary_alias=resolved_table,
-        primary_key_output=schema.primary_key,
+        primary_key_output=primary_keys[0] if len(primary_keys) == 1 else None,
+        primary_key_outputs=primary_keys,
         columns=columns,
         writable=True,
         warnings=["identity lens for CSV table"],
@@ -251,7 +254,8 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
 
     policy = project.policy_for(lens_name)
     columns: list[AnalyzedColumn] = []
-    primary_key_output: str | None = None
+    primary_keys = project.primary_key_columns(primary_table)
+    primary_key_outputs_by_column: dict[str, str] = {}
 
     for select_expression in expression.expressions:
         output_name = select_expression.alias_or_name or select_expression.sql(dialect="duckdb")
@@ -291,11 +295,13 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
                 writable = True
                 reason = _column_reason(kind)
                 source_schema = project.schema_for(primary_table).columns[source_column]
-                if source_schema.immutable:
+                if source_column in primary_keys:
+                    writable = False
+                    reason = "primary key updates are not supported"
+                    primary_key_outputs_by_column[source_column] = output_name
+                elif source_schema.immutable:
                     writable = False
                     reason = "column is immutable in schema"
-                if source_column == project.schema_for(primary_table).primary_key:
-                    primary_key_output = output_name
             elif source_table in aliases.values():
                 kind = "joined_lookup"
                 writable = bool(policy and output_name in policy.references)
@@ -330,22 +336,38 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
             )
         )
 
-    if primary_key_output is None:
+    missing_primary_keys = [
+        column_name for column_name in primary_keys if column_name not in primary_key_outputs_by_column
+    ]
+    if missing_primary_keys:
         reasons.append(
-            f"primary key {project.schema_for(primary_table).primary_key!r} is not selected by the lens"
+            f"primary key column(s) {', '.join(missing_primary_keys)!r} are not selected by the lens"
         )
 
     result = query_lens(project, lens_name)
-    if primary_key_output is not None:
-        seen_keys: set[str] = set()
+    primary_key_outputs = [
+        primary_key_outputs_by_column[column_name]
+        for column_name in primary_keys
+        if column_name in primary_key_outputs_by_column
+    ]
+    if len(primary_key_outputs) == len(primary_keys):
+        seen_keys: set[tuple[str, ...]] = set()
         for row in result.rows:
-            key = canonical_scalar(row.get(primary_key_output))
-            if key == "":
-                reasons.append(f"lens row is missing primary key output {primary_key_output!r}")
+            key = tuple(canonical_scalar(row.get(output_name)) for output_name in primary_key_outputs)
+            missing_outputs = [
+                output_name
+                for output_name, value in zip(primary_key_outputs, key, strict=True)
+                if value == ""
+            ]
+            if missing_outputs:
+                reasons.append(
+                    f"lens row is missing primary key output(s) {', '.join(missing_outputs)!r}"
+                )
                 break
             if key in seen_keys:
                 reasons.append(
-                    f"lens rows do not map one-to-one to the primary table because {primary_key_output!r} repeats"
+                    "lens rows do not map one-to-one to the primary table because "
+                    f"{', '.join(primary_key_outputs)!r} repeats"
                 )
                 break
             seen_keys.add(key)
@@ -353,12 +375,13 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
     if policy is not None:
         validate_policy_against_analysis(project, policy, columns)
 
-    writable = not reasons and primary_key_output is not None
+    writable = not reasons and len(primary_key_outputs) == len(primary_keys)
     return LensAnalysis(
         lens_name=lens_name,
         primary_table=primary_table,
         primary_alias=primary_alias,
-        primary_key_output=primary_key_output,
+        primary_key_output=primary_key_outputs[0] if len(primary_key_outputs) == 1 else None,
+        primary_key_outputs=primary_key_outputs,
         columns=columns,
         writable=writable,
         reasons=reasons,

@@ -29,9 +29,9 @@ from lenzdb.project import (
     DEFAULT_NAMESPACE,
     TABLES_CONFIG_KEY,
     Project,
+    normalize_primary_key,
     parse_namespaced_name,
     resource_key,
-    serialize_value,
     split_resource_key,
 )
 from lenzdb.render import render_analysis, render_diff, render_plan, render_view
@@ -180,14 +180,19 @@ def check_for_table(project: Project, table_name: str) -> str:
     try:
         rows = project.load_table_rows(table_name)
         schema = project.schema_for(table_name)
-        primary_column = schema.columns[schema.primary_key]
-        seen: set[str] = set()
+        primary_keys = normalize_primary_key(schema.primary_key)
+        seen: set[tuple[str, ...]] = set()
         for row in rows:
-            key = serialize_value(row.get(schema.primary_key), primary_column)
-            if key == "":
-                return f"missing_pk: {schema.primary_key}"
+            key = project.primary_key_tuple(table_name, row)
+            missing_columns = [
+                column_name
+                for column_name, value in zip(primary_keys, key, strict=True)
+                if value == ""
+            ]
+            if missing_columns:
+                return f"missing_pk: {', '.join(missing_columns)}"
             if key in seen:
-                return f"duplicate_pk: {key}"
+                return f"duplicate_pk: {project.primary_key_display(table_name, row)}"
             seen.add(key)
         return "ok"
     except Exception as exc:
@@ -302,16 +307,18 @@ def read_csv_header(path: Path) -> list[str]:
     return header
 
 
-def choose_primary_key(header: list[str], primary_key: str | None) -> str:
+def choose_primary_key(header: list[str], primary_key: str | None) -> list[str]:
     if primary_key is not None:
-        if primary_key not in header:
+        selected = parse_comma_list(primary_key, option_name="--primary-key") or []
+        missing = [column for column in selected if column not in header]
+        if missing:
             raise LenzError(
-                f"Primary key column {primary_key!r} is not in the CSV header. "
+                f"Primary key column(s) {', '.join(missing)!r} are not in the CSV header. "
                 f"Available columns: {', '.join(header)}"
             )
-        return primary_key
+        return selected
     if "id" in header:
-        return "id"
+        return ["id"]
     if sys.stdin.isatty():
         selected = typer.prompt("Primary key column", default=header[0])
         if selected not in header:
@@ -319,24 +326,30 @@ def choose_primary_key(header: list[str], primary_key: str | None) -> str:
                 f"Primary key column {selected!r} is not in the CSV header. "
                 f"Available columns: {', '.join(header)}"
             )
-        return selected
+        return [selected]
     raise LenzError("CSV has no 'id' column. Pass --primary-key to choose one.")
 
 
-def validate_csv_primary_key(path: Path, primary_key: str) -> None:
-    seen: set[str] = set()
+def validate_csv_primary_key(path: Path, primary_key: list[str]) -> None:
+    seen: set[tuple[str, ...]] = set()
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             for line_number, row in enumerate(reader, start=2):
-                value = row.get(primary_key, "")
-                if value == "":
+                value = tuple(row.get(column, "") for column in primary_key)
+                missing_columns = [
+                    column
+                    for column, column_value in zip(primary_key, value, strict=True)
+                    if column_value == ""
+                ]
+                if missing_columns:
                     raise LenzError(
-                        f"CSV primary key {primary_key!r} is empty at {path}:{line_number}"
+                        f"CSV primary key column(s) {', '.join(missing_columns)!r} "
+                        f"are empty at {path}:{line_number}"
                     )
                 if value in seen:
                     raise LenzError(
-                        f"CSV primary key {primary_key!r} has duplicate value {value!r}"
+                        f"CSV primary key {primary_key!r} has duplicate value {' | '.join(value)!r}"
                     )
                 seen.add(value)
     except OSError as exc:
@@ -385,14 +398,15 @@ def resolve_add_csv(project: Project, target: str) -> tuple[str, Path]:
     return table_key, path
 
 
-def schema_document(table_key: str, primary_key: str, header: list[str]) -> dict[str, object]:
+def schema_document(table_key: str, primary_key: list[str], header: list[str]) -> dict[str, object]:
     namespace, name = split_resource_key(table_key)
     table_name = name if namespace == DEFAULT_NAMESPACE else table_key
+    primary_key_value: str | list[str] = primary_key[0] if len(primary_key) == 1 else primary_key
     return {
         "table": table_name,
-        "primary_key": primary_key,
+        "primary_key": primary_key_value,
         "columns": {
-            column: {"type": "string", **({"immutable": True} if column == primary_key else {})}
+            column: {"type": "string", **({"immutable": True} if column in primary_key else {})}
             for column in header
         },
     }
@@ -715,7 +729,7 @@ def diff(
     diff_entries = diff_snapshots(
         current_rows,
         edited_rows,
-        analysis.primary_key_output,
+        analysis.primary_key_outputs,
         result.columns,
     )
     typer.echo(render_diff(diff_entries), nl=False)

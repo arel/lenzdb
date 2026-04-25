@@ -51,6 +51,7 @@ class MutationPlan:
     lens_name: str
     primary_table: str
     primary_key_output: str
+    primary_key_outputs: list[str]
     diff_entries: list[DiffEntry]
     updates: list[TableMutation]
     inserts: list[TableInsert]
@@ -90,12 +91,12 @@ def read_snapshot_csv(path: Path, expected_columns: list[str]) -> list[dict[str,
 def diff_snapshots(
     current_rows: list[dict[str, str]],
     edited_rows: list[dict[str, str]],
-    key_column: str | None,
+    key_columns: list[str],
     columns: list[str],
 ) -> list[DiffEntry]:
-    if key_column:
-        current_by_key = {row.get(key_column, ""): row for row in current_rows}
-        edited_by_key = {row.get(key_column, ""): row for row in edited_rows}
+    if key_columns:
+        current_by_key = {snapshot_key_tuple(row, key_columns): row for row in current_rows}
+        edited_by_key = {snapshot_key_tuple(row, key_columns): row for row in edited_rows}
         keys = list(dict.fromkeys([*current_by_key, *edited_by_key]))
         entries: list[DiffEntry] = []
         for key in keys:
@@ -104,13 +105,13 @@ def diff_snapshots(
             if current is None and edited is not None:
                 changes = [(column, "", edited.get(column, "")) for column in columns]
                 entries.append(
-                    DiffEntry(key=key or "<new>", change_type="inserted", changes=changes)
+                    DiffEntry(key=snapshot_key_display(key) or "<new>", change_type="inserted", changes=changes)
                 )
                 continue
             if current is not None and edited is None:
                 changes = [(column, current.get(column, ""), "") for column in columns]
                 entries.append(
-                    DiffEntry(key=key or "<missing>", change_type="deleted", changes=changes)
+                    DiffEntry(key=snapshot_key_display(key) or "<missing>", change_type="deleted", changes=changes)
                 )
                 continue
             assert current is not None and edited is not None
@@ -122,7 +123,7 @@ def diff_snapshots(
                     cell_changes.append((column, before, after))
             if cell_changes:
                 entries.append(
-                    DiffEntry(key=key or "<blank>", change_type="updated", changes=cell_changes)
+                    DiffEntry(key=snapshot_key_display(key) or "<blank>", change_type="updated", changes=cell_changes)
                 )
         return entries
 
@@ -163,6 +164,16 @@ def diff_snapshots(
     return entries
 
 
+def snapshot_key_tuple(row: dict[str, str], key_columns: list[str]) -> tuple[str, ...]:
+    return tuple(row.get(column, "") for column in key_columns)
+
+
+def snapshot_key_display(key: tuple[str, ...]) -> str:
+    if len(key) == 1:
+        return key[0]
+    return " | ".join(key)
+
+
 def resolve_target_column(
     project: Project,
     analyzed_column: AnalyzedColumn,
@@ -190,7 +201,12 @@ def find_reference_match(
 ) -> Any:
     lookup_table = project.resolve_table_name(reference_policy.lookup.table)
     lookup_schema = project.schema_for(lookup_table)
-    lookup_key = lookup_schema.primary_key
+    lookup_keys = project.primary_key_columns(lookup_table)
+    if len(lookup_keys) != 1:
+        raise MutationError(
+            f"Reference lookup table {lookup_table!r} has a composite primary key, which is not supported"
+        )
+    lookup_key = lookup_keys[0]
     match_column = reference_policy.lookup.match
 
     matches = [
@@ -242,7 +258,7 @@ def collect_row_changes(
     changes: dict[str, Any] = {}
 
     for output_name, new_value in edited_row.items():
-        if output_name == analysis.primary_key_output:
+        if output_name in analysis.primary_key_outputs:
             if current_row is not None and new_value != current_row.get(output_name, ""):
                 raise MutationError("Updating a lens row primary key is not supported")
             continue
@@ -314,38 +330,39 @@ def build_mutation_plan(
             "Resource is not writable: "
             + "; ".join(analysis.reasons or ["missing primary key mapping"])
         )
-    if analysis.primary_table is None or analysis.primary_key_output is None:
+    if analysis.primary_table is None or not analysis.primary_key_outputs:
         raise MutationError("Lens is missing primary table or primary key information")
 
     result = query_resource(project, resource_name)
     current_rows = snapshot_rows(result.columns, result.rows)
     edited_rows = read_snapshot_csv(Path(edited_csv_path), result.columns)
     diff_entries = diff_snapshots(
-        current_rows, edited_rows, analysis.primary_key_output, result.columns
+        current_rows, edited_rows, analysis.primary_key_outputs, result.columns
     )
 
-    current_by_key: dict[str, dict[str, str]] = {}
+    current_by_key: dict[tuple[str, ...], dict[str, str]] = {}
     for row in current_rows:
-        key = row.get(analysis.primary_key_output, "")
-        if key == "":
+        key = snapshot_key_tuple(row, analysis.primary_key_outputs)
+        if any(value == "" for value in key):
             raise MutationError("Lens contains a row without the primary key output")
         if key in current_by_key:
             raise MutationError("Lens rows do not map one-to-one to the primary table")
         current_by_key[key] = row
 
-    edited_keys = [row.get(analysis.primary_key_output, "") for row in edited_rows if row]
-    deleted_keys = sorted(set(current_by_key) - {key for key in edited_keys if key})
+    edited_keys = [snapshot_key_tuple(row, analysis.primary_key_outputs) for row in edited_rows if row]
+    deleted_keys = sorted(set(current_by_key) - {key for key in edited_keys if all(key)})
     if deleted_keys:
         raise MutationError(
-            f"Deleting rows through edited lens snapshots is not supported in v1: {deleted_keys}"
+            "Deleting rows through edited lens snapshots is not supported in v1: "
+            f"{[snapshot_key_display(key) for key in deleted_keys]}"
         )
 
     rows_by_table = project.load_all_rows()
     working_rows = deepcopy(rows_by_table)
     primary_schema = project.schema_for(analysis.primary_table)
-    primary_key = primary_schema.primary_key
+    primary_keys = project.primary_key_columns(analysis.primary_table)
     base_index = {
-        serialize_value(row.get(primary_key), primary_schema.columns[primary_key]): row
+        project.primary_key_tuple(analysis.primary_table, row): row
         for row in working_rows[analysis.primary_table]
     }
 
@@ -354,10 +371,10 @@ def build_mutation_plan(
     reference_creations: list[TableInsert] = []
     generated_primary_keys: list[str] = []
     touched_tables: set[str] = set()
-    pending_insert_keys: set[str] = set()
+    pending_insert_keys: set[tuple[str, ...]] = set()
 
     for edited_row in edited_rows:
-        key = edited_row.get(analysis.primary_key_output, "")
+        key = snapshot_key_tuple(edited_row, analysis.primary_key_outputs)
         current_row = current_by_key.get(key)
 
         if current_row is not None:
@@ -374,37 +391,54 @@ def build_mutation_plan(
                 is_insert=False,
                 rows_by_table=working_rows,
                 reference_creations=reference_creations,
-            )
+                )
             if changes:
                 base_row.update(changes)
                 updates.append(
-                    TableMutation(table=analysis.primary_table, key=key, changes=deepcopy(changes))
+                    TableMutation(
+                        table=analysis.primary_table,
+                        key=snapshot_key_display(key),
+                        changes=deepcopy(changes),
+                    )
                 )
                 touched_tables.add(analysis.primary_table)
             continue
 
         new_row = project.blank_row(analysis.primary_table)
-        pk_value = key
-        if pk_value == "":
-            pk_column = primary_schema.columns[primary_key]
+        pk_values = key
+        if len(primary_keys) == 1 and pk_values[0] == "":
+            pk_column = primary_schema.columns[primary_keys[0]]
             if pk_column.type != "string":
                 raise MutationError(
                     f"Inserted rows for {analysis.primary_table!r} must supply primary key "
-                    f"{primary_key!r} because it is not a string column"
+                    f"{primary_keys[0]!r} because it is not a string column"
                 )
             pk_value = project.generate_primary_key(analysis.primary_table)
             generated_primary_keys.append(pk_value)
             edited_row = dict(edited_row)
-            edited_row[analysis.primary_key_output] = pk_value
-
-        if pk_value in base_index or pk_value in pending_insert_keys:
+            edited_row[analysis.primary_key_outputs[0]] = pk_value
+            pk_values = (pk_value,)
+        elif any(value == "" for value in pk_values):
+            missing_outputs = [
+                output_name
+                for output_name, value in zip(analysis.primary_key_outputs, pk_values, strict=True)
+                if value == ""
+            ]
             raise MutationError(
-                f"Inserted row primary key {pk_value!r} already exists in {analysis.primary_table!r}"
+                f"Inserted rows for {analysis.primary_table!r} must supply primary key output(s) "
+                f"{', '.join(missing_outputs)}"
             )
 
-        new_row[primary_key] = parse_input_value(
-            project, analysis.primary_table, primary_key, pk_value
-        )
+        if pk_values in base_index or pk_values in pending_insert_keys:
+            raise MutationError(
+                f"Inserted row primary key {snapshot_key_display(pk_values)!r} "
+                f"already exists in {analysis.primary_table!r}"
+            )
+
+        for primary_key, pk_value in zip(primary_keys, pk_values, strict=True):
+            new_row[primary_key] = parse_input_value(
+                project, analysis.primary_table, primary_key, pk_value
+            )
         changes = collect_row_changes(
             project=project,
             analysis=analysis,
@@ -416,8 +450,8 @@ def build_mutation_plan(
         )
         new_row.update(changes)
         working_rows[analysis.primary_table].append(new_row)
-        base_index[pk_value] = new_row
-        pending_insert_keys.add(pk_value)
+        base_index[pk_values] = new_row
+        pending_insert_keys.add(pk_values)
         inserts.append(TableInsert(table=analysis.primary_table, row=deepcopy(new_row)))
         touched_tables.add(analysis.primary_table)
 
@@ -429,7 +463,8 @@ def build_mutation_plan(
     return MutationPlan(
         lens_name=analysis.lens_name,
         primary_table=analysis.primary_table,
-        primary_key_output=analysis.primary_key_output,
+        primary_key_output=analysis.primary_key_output or ", ".join(analysis.primary_key_outputs),
+        primary_key_outputs=analysis.primary_key_outputs,
         diff_entries=diff_entries,
         updates=updates,
         inserts=inserts,
