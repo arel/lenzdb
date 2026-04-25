@@ -40,6 +40,7 @@ class QueryResult:
 @dataclass(slots=True)
 class ResourceQuery:
     columns: list[str] | None = None
+    distinct: list[str] | None = None
     where: str | None = None
     order: list[str] | None = None
     limit: int | None = None
@@ -216,6 +217,11 @@ def build_resource_view_sql(
 
     if query.count:
         select_sql = "SELECT count(*) AS count"
+    elif query.distinct:
+        validate_query_columns(query.distinct, available_columns, option_name="distinct")
+        select_sql = "SELECT DISTINCT " + ", ".join(
+            quote_identifier(column) for column in query.distinct
+        )
     elif query.columns:
         validate_query_columns(query.columns, available_columns, option_name="selected")
         select_sql = "SELECT " + ", ".join(quote_identifier(column) for column in query.columns)

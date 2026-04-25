@@ -512,6 +512,13 @@ def view(
             help="Comma-separated columns to show, e.g. id,title,status.",
         ),
     ] = None,
+    distinct: Annotated[
+        str | None,
+        typer.Option(
+            "--distinct",
+            help="Comma-separated columns whose distinct values should be returned.",
+        ),
+    ] = None,
     where: Annotated[
         str | None,
         typer.Option(
@@ -560,6 +567,7 @@ def view(
 ) -> None:
     project_instance = load_project(project, validate_configuration=False)
     selected_columns = parse_comma_list(columns, option_name="--columns")
+    distinct_columns = parse_comma_list(distinct, option_name="--distinct")
     order_columns = parse_comma_list(order, option_name="--order")
     if sql is not None and not sql.strip():
         raise LenzError("--sql must not be empty")
@@ -570,14 +578,34 @@ def view(
 
     convenience_options = [
         option is not None
-        for option in [selected_columns, where, order_columns, limit, offset, page, page_size]
+        for option in [
+            selected_columns,
+            distinct_columns,
+            where,
+            order_columns,
+            limit,
+            offset,
+            page,
+            page_size,
+        ]
     ]
     if sql is not None and (count or any(convenience_options)):
         raise LenzError("--sql cannot be combined with view convenience options")
     if count and any(
-        option is not None for option in [selected_columns, order_columns, limit, offset, page, page_size]
+        option is not None
+        for option in [
+            selected_columns,
+            distinct_columns,
+            order_columns,
+            limit,
+            offset,
+            page,
+            page_size,
+        ]
     ):
         raise LenzError("--count may only be combined with --filter")
+    if distinct_columns is not None and selected_columns is not None:
+        raise LenzError("--distinct cannot be combined with --columns")
     if page is not None and (limit is not None or offset is not None):
         raise LenzError("--page cannot be combined with --limit or --offset")
     if page_size is not None and page is None:
@@ -592,6 +620,7 @@ def view(
 
     query = ResourceQuery(
         columns=selected_columns,
+        distinct=distinct_columns,
         where=where,
         order=order_columns,
         limit=effective_limit,

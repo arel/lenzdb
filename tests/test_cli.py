@@ -114,6 +114,73 @@ def test_view_count_allows_filter(runner, example_project: Path) -> None:
     assert "| 1 |" in result.stdout
 
 
+def test_view_distinct_single_column(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--distinct",
+            "project_id",
+            "--order",
+            "project_id",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "| project_id |" in result.stdout
+    assert "| p-1 |" in result.stdout
+    assert "| p-2 |" in result.stdout
+    assert result.stdout.count("| p-1 |") == 1
+
+
+def test_view_distinct_multiple_columns(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--distinct",
+            "status,project_id",
+            "--order",
+            "status,project_id",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "| status | project_id |" in result.stdout
+    assert "| doing | p-2 |" in result.stdout
+    assert "| done | p-1 |" in result.stdout
+    assert "| todo | p-1 |" in result.stdout
+
+
+def test_view_distinct_rejects_columns(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--distinct",
+            "status",
+            "--columns",
+            "id,status",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--distinct cannot be combined with --columns" in result.stderr
+
+
 def test_view_sql_uses_resource_alias(runner, example_project: Path) -> None:
     result = runner.invoke(
         app,
