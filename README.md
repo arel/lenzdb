@@ -41,6 +41,29 @@ The CLI command is:
 lnz --help
 ```
 
+## Configuration
+
+Most commands locate a project in this order:
+
+1. `--project PATH`
+2. `$LENZDB_PROJECT_ROOT`
+3. The current working directory
+
+`lnz edit` chooses an editor in this order:
+
+1. `--editor COMMAND`
+2. `$LENZDB_EDITOR`
+3. `$EDITOR`
+
+Example:
+
+```bash
+export LENZDB_PROJECT_ROOT=examples/basic
+export LENZDB_EDITOR=vim
+lnz list
+lnz edit open_tasks
+```
+
 ## Project Layout
 
 A minimal project looks like this:
@@ -162,9 +185,6 @@ Or let LenzDB open the editor for you:
 ```bash
 LENZDB_EDITOR=vim lnz edit open_tasks --project examples/basic
 ```
-
-`lnz edit` chooses an editor in this order: `--editor`, `$LENZDB_EDITOR`, then
-`$EDITOR`.
 
 `apply` and `edit` do not ask a final `y/N` question. Keep project files under
 version control so data changes can be reviewed and reverted normally.

@@ -395,7 +395,7 @@ def test_missing_project_error_is_helpful(runner, tmp_path: Path) -> None:
     result = runner.invoke(app, ["view", "all_tasks", "--project", str(tmp_path)])
     assert result.exit_code == 1
     assert "No LenzDB project found" in result.stderr
-    assert "Run from a project root or pass --project." in result.stderr
+    assert "Run from a project root, pass --project, or set $LENZDB_PROJECT_ROOT." in result.stderr
 
 
 def test_check_and_explain(runner, example_project: Path) -> None:

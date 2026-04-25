@@ -143,7 +143,7 @@ class Project:
         if not schema_dir.exists():
             raise ProjectError(
                 f"No LenzDB project found at {project_root}. Expected {schema_dir}. "
-                "Run from a project root or pass --project."
+                "Run from a project root, pass --project, or set $LENZDB_PROJECT_ROOT."
             )
 
         schemas = cls._load_schemas(schema_dir)
