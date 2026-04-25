@@ -118,7 +118,7 @@ lnz view tasks --project examples/basic --page 2
 lnz view tasks --project examples/basic --count
 lnz view open_tasks --project examples/basic --sql "select title from resource where status = 'doing'"
 lnz list --project examples/basic
-lnz list --project examples/basic --with-status
+lnz list --project examples/basic --check
 lnz explain open_tasks --project examples/basic
 ```
 

@@ -131,7 +131,7 @@ class Project:
     view_page_size: int = DEFAULT_VIEW_PAGE_SIZE
 
     @classmethod
-    def discover(cls, root: str | Path | None = None) -> Project:
+    def discover(cls, root: str | Path | None = None, *, validate_configuration: bool = True) -> Project:
         project_root = Path(root or Path.cwd()).resolve()
         lenz_dir = project_root / ".lenzdb"
         project_config = cls._load_project_config(lenz_dir / "project.yaml")
@@ -162,7 +162,8 @@ class Project:
             policies=policies,
             view_page_size=view_page_size,
         )
-        project.validate_configuration()
+        if validate_configuration:
+            project.validate_configuration()
         return project
 
     @staticmethod

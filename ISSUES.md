@@ -22,19 +22,13 @@
 - [x] Single registered files may omit namespace and then use `main`.
 - [x] Registered duplicate short names require explicit qualification instead of precedence.
 
-- [ ] how are ambiguous csv types handled (string/number/null) etc.? handled by duckdb?
-
 - [x] On error after `lnz edit`, preserve the edited CSV under `.lenzdb/recovery/`, resume it on the next edit, and clear recovery files after a successful save.
-
-- [ ] add deletion logic for "edit"? (compare against original query)
 
 - [x] Be able to `view` CSV data files as well as lenses, including shell completion sources.
 
 - [x] Add `lnz list` for namespaces, tables, lenses, and paths, with optional `--with-status/-s`.
 
 - [x] Treat CSV tables as identity-lens resources for `view`, `explain`, `diff`, `plan`, `apply`, and `edit`.
-
-- [ ] create/edit a lense from the CLI?
 
 - [x] Add `view` inline options for SQL, filter, selected columns, order, count rows, limit, offset, and page with `view.page_size` defaulting to 100.
 
@@ -46,8 +40,29 @@ Error: Missing schema directory: /workspaces/lenz-db/.lenzdb/schema
 -id,title,status,project_id
 +id,title,status,project_id^M
 
-- [ ] update README with less disjointed humor (stick to one universal less nerdy theme)
-
 - [ ] defining PK? default behavior `id` column? first column? compound columns? defined in config somewhere?
 
 - [ ] command to create PK column?
+
+- [ ] how are ambiguous csv types handled (string/number/null) etc.? handled by duckdb?
+
+- [ ] add deletion logic for "edit"? (compare against original query)
+
+- [ ] update README with less disjointed humor (stick to one universal less nerdy theme)
+
+- [ ] multi-column PKs?
+
+- [ ] rename to lnz to lenz?
+
+- [ ] use $LENZDB_EDITOR in addition to $EDITOR?
+
+- [ ] refactor:
+
+    lnz list
+    Error: CSV/schema mismatch: missing_csv=[], extra_csv=['bar.snoo']
+
+    - no hard error if missing_csv. Instead, the status should be 'missing' if showing status
+
+    - on extra_csv:
+        - `list` should not error either; it should show something like 'untracked' and after output a STDERR message could say to add the missing tables with `lnz add [table]`
+        - maybe there should be a command `add` that adds and tracks a csv (by creating a matching schema with good defaults, including asking for PK column name interactively unless passed in with arg.

@@ -259,10 +259,10 @@ def test_view_registered_namespaced_lens_and_unqualified_table(
 def test_list_resources(runner, example_project: Path) -> None:
     result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
     assert result.exit_code == 0
-    assert "| kind | namespace | name | path |" in result.stdout
-    assert "| table | main | tasks | tasks.csv |" in result.stdout
-    assert "| lens | main | open_tasks | open_tasks.sql |" in result.stdout
-    assert "status" not in result.stdout
+    assert "| kind | namespace | name | path | state |" in result.stdout
+    assert "| table | main | tasks | tasks.csv | added |" in result.stdout
+    assert "| lens | main | open_tasks | open_tasks.sql | added |" in result.stdout
+    assert "check" not in result.stdout
 
 
 def test_list_resources_with_dotted_lens_filename(runner, example_project: Path) -> None:
@@ -274,18 +274,46 @@ def test_list_resources_with_dotted_lens_filename(runner, example_project: Path)
     result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
 
     assert result.exit_code == 0
-    assert "| lens | bar | foo | bar.foo.sql |" in result.stdout
-    assert "| lens | other.thing.bar | foo | other.thing.bar.foo.sql |" in result.stdout
+    assert "| lens | bar | foo | bar.foo.sql | added |" in result.stdout
+    assert "| lens | other.thing.bar | foo | other.thing.bar.foo.sql | added |" in result.stdout
 
 
-def test_list_resources_with_status(runner, example_project: Path) -> None:
+def test_list_resources_with_check(runner, example_project: Path) -> None:
     result = runner.invoke(
-        app, ["list", "--project", str(example_project), "--with-status", "--format", "markdown"]
+        app, ["list", "--project", str(example_project), "--check", "--format", "markdown"]
     )
     assert result.exit_code == 0
-    assert "| kind | namespace | name | path | status |" in result.stdout
-    assert "| table | main | tasks | tasks.csv | ok |" in result.stdout
-    assert "| lens | main | open_tasks | open_tasks.sql | ok |" in result.stdout
+    assert "| kind | namespace | name | path | state | check |" in result.stdout
+    assert "| table | main | tasks | tasks.csv | added | ok |" in result.stdout
+    assert "| lens | main | open_tasks | open_tasks.sql | added | ok |" in result.stdout
+
+
+def test_list_resources_with_missing_and_untracked_csvs(runner, example_project: Path) -> None:
+    (example_project / "tasks.csv").unlink()
+    (example_project / "bar.snoo.csv").write_text("id,name\ns-1,Snoo\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| table | main | tasks |  | missing |" in result.stdout
+    assert "| table | bar | snoo | bar.snoo.csv | untracked |" in result.stdout
+
+
+def test_list_resources_marks_header_mismatch_as_state_error(
+    runner, example_project: Path
+) -> None:
+    (example_project / "tasks.csv").write_text(
+        "id,title,status\n"
+        "t-1,Ship CLI skeleton,todo\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app, ["list", "--project", str(example_project), "--check", "--format", "markdown"]
+    )
+
+    assert result.exit_code == 0
+    assert "| table | main | tasks | tasks.csv | error | header_mismatch:" in result.stdout
 
 
 def test_explain_table_resource(runner, example_project: Path) -> None:

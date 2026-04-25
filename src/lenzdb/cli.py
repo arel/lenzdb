@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import csv
 from functools import wraps
 from pathlib import Path
 from typing import Annotated
@@ -22,7 +23,7 @@ from lenzdb.planner import (
     read_snapshot_csv,
     snapshot_rows,
 )
-from lenzdb.project import Project, split_resource_key
+from lenzdb.project import Project, serialize_value, split_resource_key
 from lenzdb.render import render_analysis, render_diff, render_plan, render_view
 
 app = typer.Typer(help="LenzDB CLI")
@@ -42,11 +43,11 @@ ProjectOption = Annotated[
 ]
 
 
-def load_project(project_root: Path | None) -> Project:
+def load_project(project_root: Path | None, *, validate_configuration: bool = True) -> Project:
     selected_root: Path | str | None = project_root
     if selected_root is None:
         selected_root = os.environ.get(PROJECT_ROOT_ENV_VAR) or None
-    return Project.discover(selected_root)
+    return Project.discover(selected_root, validate_configuration=validate_configuration)
 
 
 def complete_project_resource(incomplete: str) -> list[str]:
@@ -71,6 +72,7 @@ def complete_lens(incomplete: str) -> list[str]:
 
 def project_namespaces(project: Project) -> list[str]:
     namespaces = {split_resource_key(key)[0] for key in project.schemas}
+    namespaces.update(split_resource_key(key)[0] for key in project.table_paths)
     namespaces.update(split_resource_key(key)[0] for key in project.lenses)
     return sorted(namespaces)
 
@@ -84,21 +86,74 @@ def relative_path(project: Project, path: Path | None) -> str:
         return str(path)
 
 
-def status_for_namespace(project: Project, namespace: str) -> str:
+def state_for_namespace(project: Project, namespace: str) -> str:
     has_table = any(split_resource_key(key)[0] == namespace for key in project.schemas)
+    has_table_path = any(split_resource_key(key)[0] == namespace for key in project.table_paths)
     has_lens = any(split_resource_key(key)[0] == namespace for key in project.lenses)
-    return "ok" if has_table or has_lens else "empty"
+    return "added" if has_table or has_table_path or has_lens else "missing"
 
 
-def status_for_table(project: Project, table_name: str) -> str:
+def header_error_for_table(project: Project, table_name: str) -> str | None:
+    if table_name not in project.schemas or table_name not in project.table_paths:
+        return None
+    schema = project.schema_for(table_name)
+    path = project.table_path(table_name)
     try:
-        project.load_table_rows(table_name)
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            headers = reader.fieldnames or []
+    except Exception as exc:
+        return str(exc)
+    expected = list(schema.columns)
+    missing = [name for name in expected if name not in headers]
+    extra = [name for name in headers if name not in schema.columns]
+    if missing or extra:
+        return f"header_mismatch: missing={missing or '[]'}, extra={extra or '[]'}"
+    return None
+
+
+def state_for_table(project: Project, table_name: str) -> str:
+    has_schema = table_name in project.schemas
+    has_csv = table_name in project.table_paths
+    if has_schema and has_csv:
+        return "error" if header_error_for_table(project, table_name) else "added"
+    if has_schema:
+        return "missing"
+    return "untracked"
+
+
+def check_for_namespace(project: Project, namespace: str) -> str:
+    return "ok" if state_for_namespace(project, namespace) == "added" else "missing"
+
+
+def check_for_table(project: Project, table_name: str) -> str:
+    state = state_for_table(project, table_name)
+    if state != "added":
+        if state == "error":
+            return header_error_for_table(project, table_name) or "error"
+        return state
+    try:
+        rows = project.load_table_rows(table_name)
+        schema = project.schema_for(table_name)
+        primary_column = schema.columns[schema.primary_key]
+        seen: set[str] = set()
+        for row in rows:
+            key = serialize_value(row.get(schema.primary_key), primary_column)
+            if key == "":
+                return f"missing_pk: {schema.primary_key}"
+            if key in seen:
+                return f"duplicate_pk: {key}"
+            seen.add(key)
         return "ok"
     except Exception as exc:
         return str(exc)
 
 
-def status_for_lens(project: Project, lens_name: str) -> str:
+def state_for_lens(project: Project, lens_name: str) -> str:
+    return "added" if project.lenses.get(lens_name) else "missing"
+
+
+def check_for_lens(project: Project, lens_name: str) -> str:
     try:
         analyze_lens(project, lens_name)
         query_lens(project, lens_name)
@@ -107,24 +162,32 @@ def status_for_lens(project: Project, lens_name: str) -> str:
         return str(exc)
 
 
-def build_list_rows(project: Project, with_status: bool) -> list[dict[str, str]]:
+def build_list_rows(project: Project, check: bool) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
     for namespace in project_namespaces(project):
-        row = {"kind": "namespace", "namespace": namespace, "name": namespace, "path": ""}
-        if with_status:
-            row["status"] = status_for_namespace(project, namespace)
+        row = {
+            "kind": "namespace",
+            "namespace": namespace,
+            "name": namespace,
+            "path": "",
+            "state": state_for_namespace(project, namespace),
+        }
+        if check:
+            row["check"] = check_for_namespace(project, namespace)
         rows.append(row)
 
-    for table_name, path in sorted(project.table_paths.items()):
+    for table_name in sorted(set(project.schemas) | set(project.table_paths)):
+        path = project.table_paths.get(table_name)
         namespace, name = split_resource_key(table_name)
         row = {
             "kind": "table",
             "namespace": namespace,
             "name": name,
             "path": relative_path(project, path),
+            "state": state_for_table(project, table_name),
         }
-        if with_status:
-            row["status"] = status_for_table(project, table_name)
+        if check:
+            row["check"] = check_for_table(project, table_name)
         rows.append(row)
 
     for lens_name, path in sorted(project.lenses.items()):
@@ -134,9 +197,10 @@ def build_list_rows(project: Project, with_status: bool) -> list[dict[str, str]]
             "namespace": namespace,
             "name": name,
             "path": relative_path(project, path),
+            "state": state_for_lens(project, lens_name),
         }
-        if with_status:
-            row["status"] = status_for_lens(project, lens_name)
+        if check:
+            row["check"] = check_for_lens(project, lens_name)
         rows.append(row)
     return rows
 
@@ -316,21 +380,21 @@ def list_resources(
         case_sensitive=False,
         show_default=True,
     ),
-    with_status: Annotated[
+    check: Annotated[
         bool,
         typer.Option(
-            "--with-status",
-            "-s",
-            help="Run validation/query checks and include a status column.",
+            "--check",
+            "-c",
+            help="Run validation/query checks and include a check column.",
         ),
     ] = False,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project)
-    columns = ["kind", "namespace", "name", "path"]
-    if with_status:
-        columns.append("status")
-    rows = build_list_rows(project_instance, with_status)
+    project_instance = load_project(project, validate_configuration=False)
+    columns = ["kind", "namespace", "name", "path", "state"]
+    if check:
+        columns.append("check")
+    rows = build_list_rows(project_instance, check)
     typer.echo(render_view(columns, rows, output_format), nl=False)
 
 
