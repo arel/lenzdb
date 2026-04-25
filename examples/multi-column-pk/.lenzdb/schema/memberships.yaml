@@ -1,0 +1,14 @@
+table: memberships
+primary_key: [org_id, user_id]
+columns:
+  org_id:
+    type: string
+    immutable: true
+  user_id:
+    type: string
+    immutable: true
+  user_name:
+    type: string
+  role:
+    type: enum
+    values: [owner, admin, member, viewer]
