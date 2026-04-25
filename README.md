@@ -1,6 +1,6 @@
 # LenzDB
 
-<video src="public/screen-recording.webm" controls></video>
+[Screen recording 2026-04-25 12.05.35 PM.webm](https://github.com/user-attachments/assets/72860259-5e87-41fa-b667-0e80bf75ada8)
 
 LenzDB is a small, Git-native data tool for CSV-backed project data.
 
