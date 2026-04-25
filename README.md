@@ -1,5 +1,7 @@
 # LenzDB
 
+<video src="public/screen-recording.webm" controls></video>
+
 LenzDB is a small, Git-native data tool for CSV-backed project data.
 
 It lets you define SQL views, called lenses, over plain CSV data. You can inspect
