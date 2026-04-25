@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import inspect
 import os
-import csv
 import sys
 from functools import wraps
 from pathlib import Path
@@ -55,11 +55,20 @@ ProjectOption = Annotated[
 ]
 
 
-def load_project(project_root: Path | None, *, validate_configuration: bool = True) -> Project:
+def load_project(
+    project_root: Path | None,
+    *,
+    validate_configuration: bool = True,
+    allow_incomplete: bool = False,
+) -> Project:
     selected_root: Path | str | None = project_root
     if selected_root is None:
         selected_root = os.environ.get(PROJECT_ROOT_ENV_VAR) or None
-    return Project.discover(selected_root, validate_configuration=validate_configuration)
+    return Project.discover(
+        selected_root,
+        validate_configuration=validate_configuration,
+        allow_incomplete=allow_incomplete,
+    )
 
 
 def complete_project_resource(incomplete: str) -> list[str]:
@@ -87,6 +96,26 @@ def project_namespaces(project: Project) -> list[str]:
     namespaces.update(split_resource_key(key)[0] for key in project.table_paths)
     namespaces.update(split_resource_key(key)[0] for key in project.lenses)
     return sorted(namespaces)
+
+
+def add_current_dir_resources(project: Project) -> None:
+    current_dir = Path.cwd().resolve()
+    try:
+        current_dir.relative_to(project.root)
+    except ValueError:
+        return
+    if current_dir == project.root or not current_dir.is_dir():
+        return
+
+    for path in sorted(current_dir.glob("*.csv")):
+        namespace, name = parse_namespaced_name(path.stem)
+        key = resource_key(namespace, name)
+        project.table_paths.setdefault(key, path.resolve())
+
+    for path in sorted(current_dir.glob("*.sql")):
+        namespace, name = parse_namespaced_name(path.stem)
+        key = resource_key(namespace, name)
+        project.lenses.setdefault(key, path.resolve())
 
 
 def relative_path(project: Project, path: Path | None) -> str:
@@ -126,10 +155,14 @@ def header_error_for_table(project: Project, table_name: str) -> str | None:
 
 def state_for_table(project: Project, table_name: str) -> str:
     has_schema = table_name in project.schemas
-    has_csv = table_name in project.table_paths
-    if has_schema and has_csv:
+    path = project.table_paths.get(table_name)
+    has_csv = path is not None
+    has_existing_csv = path is not None and path.exists()
+    if has_schema and has_existing_csv:
         return "error" if header_error_for_table(project, table_name) else "added"
     if has_schema:
+        return "missing"
+    if has_csv and not has_existing_csv:
         return "missing"
     return "untracked"
 
@@ -162,10 +195,13 @@ def check_for_table(project: Project, table_name: str) -> str:
 
 
 def state_for_lens(project: Project, lens_name: str) -> str:
-    return "added" if project.lenses.get(lens_name) else "missing"
+    path = project.lenses.get(lens_name)
+    return "added" if path is not None and path.exists() else "missing"
 
 
 def check_for_lens(project: Project, lens_name: str) -> str:
+    if state_for_lens(project, lens_name) != "added":
+        return "missing"
     try:
         analyze_lens(project, lens_name)
         query_lens(project, lens_name)
@@ -325,15 +361,19 @@ def is_auto_discovered_table_path(project: Project, path: Path) -> bool:
 def resolve_add_csv(project: Project, target: str) -> tuple[str, Path]:
     target_path = Path(target)
     if target_path.suffix == ".csv" or target_path.exists():
-        path = (
-            (project.root / target_path).resolve()
-            if not target_path.is_absolute()
-            else target_path.resolve()
-        )
+        if target_path.is_absolute():
+            path = target_path.resolve()
+        else:
+            cwd_path = (Path.cwd() / target_path).resolve()
+            project_path = (project.root / target_path).resolve()
+            path = cwd_path
+            if not path.exists() and project_path != cwd_path:
+                path = project_path
         if not path.exists():
             raise LenzError(f"CSV file does not exist: {path}")
         if not path.is_file() or path.suffix != ".csv":
             raise LenzError(f"Path must point to a .csv file: {path}")
+        project_relative_path(project, path)
         namespace, name = parse_namespaced_name(path.stem)
         return resource_key(namespace, name), path
 
@@ -421,7 +461,12 @@ def add(
     ] = None,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project, validate_configuration=False)
+    project_instance = load_project(
+        project,
+        validate_configuration=False,
+        allow_incomplete=True,
+    )
+    add_current_dir_resources(project_instance)
     table_key, path = resolve_add_csv(project_instance, target)
     if table_key in project_instance.schemas:
         raise LenzError(f"Table {table_key!r} already has a schema")
@@ -596,7 +641,12 @@ def list_resources(
     ] = False,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project, validate_configuration=False)
+    project_instance = load_project(
+        project,
+        validate_configuration=False,
+        allow_incomplete=True,
+    )
+    add_current_dir_resources(project_instance)
     columns = ["kind", "namespace", "name", "path", "state"]
     if check:
         columns.append("check")

@@ -310,6 +310,60 @@ def test_list_resources_with_missing_and_untracked_csvs(runner, example_project:
     assert "| table | bar | snoo | bar.snoo.csv | untracked |" in result.stdout
 
 
+def test_list_resources_with_missing_registered_csv(runner, example_project: Path) -> None:
+    (example_project / ".lenzdb" / "schema" / "main.pear.yaml").write_text(
+        "table: pear\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  name:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+    (example_project / ".lenzdb" / "project.yaml").write_text(
+        "tables:\n"
+        "  - path: somedir/pear.csv\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| table | main | pear | somedir/pear.csv | missing |" in result.stdout
+
+
+def test_list_resources_without_lenzdb_shows_untracked_csvs(runner, example_project: Path) -> None:
+    lenz_dir = example_project / ".lenzdb"
+    for path in sorted(lenz_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        else:
+            path.rmdir()
+    lenz_dir.rmdir()
+
+    result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| table | main | projects | projects.csv | untracked |" in result.stdout
+    assert "| table | main | tasks | tasks.csv | untracked |" in result.stdout
+
+
+def test_list_resources_in_current_subdir_shows_untracked_csv(
+    runner, example_project: Path, monkeypatch
+) -> None:
+    somedir = example_project / "somedir"
+    somedir.mkdir()
+    (somedir / "pear.csv").write_text("id,name\np-1,Pear\n", encoding="utf-8")
+    monkeypatch.chdir(somedir)
+
+    result = runner.invoke(app, ["list", "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| table | main | pear | somedir/pear.csv | untracked |" in result.stdout
+
+
 def test_list_resources_marks_header_mismatch_as_state_error(
     runner, example_project: Path
 ) -> None:
@@ -382,6 +436,27 @@ def test_add_csv_in_subfolder_registers_project_path(runner, example_project: Pa
     )
     assert view_result.exit_code == 0
     assert "| note-1 | Useful |" in view_result.stdout
+
+
+def test_add_csv_path_is_resolved_from_current_dir(
+    runner, example_project: Path, monkeypatch
+) -> None:
+    somedir = example_project / "somedir"
+    somedir.mkdir()
+    (somedir / "pear.csv").write_text(
+        "id,name\n"
+        "p-1,Pear\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(somedir)
+
+    result = runner.invoke(app, ["add", "./pear.csv", "--primary-key", "id"])
+
+    assert result.exit_code == 0
+    assert "Added table main.pear" in result.stdout
+    project_config = (example_project / ".lenzdb" / "project.yaml").read_text(encoding="utf-8")
+    assert "path: somedir/pear.csv" in project_config
+    assert (example_project / ".lenzdb" / "schema" / "main.pear.yaml").exists()
 
 
 def test_explain_table_resource(runner, example_project: Path) -> None:

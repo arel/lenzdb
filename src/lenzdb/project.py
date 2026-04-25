@@ -131,8 +131,14 @@ class Project:
     view_page_size: int = DEFAULT_VIEW_PAGE_SIZE
 
     @classmethod
-    def discover(cls, root: str | Path | None = None, *, validate_configuration: bool = True) -> Project:
-        project_root = Path(root or Path.cwd()).resolve()
+    def discover(
+        cls,
+        root: str | Path | None = None,
+        *,
+        validate_configuration: bool = True,
+        allow_incomplete: bool = False,
+    ) -> Project:
+        project_root = cls._resolve_project_root(root)
         lenz_dir = project_root / ".lenzdb"
         project_config = cls._load_project_config(lenz_dir / "project.yaml")
         data_dir = lenz_dir / "data"
@@ -141,14 +147,27 @@ class Project:
         policies_dir = lenz_dir / "policies"
 
         if not schema_dir.exists():
-            raise ProjectError(
-                f"No LenzDB project found at {project_root}. Expected {schema_dir}. "
-                "Run from a project root, pass --project, or set $LENZDB_PROJECT_ROOT."
-            )
+            if not allow_incomplete:
+                raise ProjectError(
+                    f"No LenzDB project found at {project_root}. Expected {schema_dir}. "
+                    "Run from a project root, pass --project, or set $LENZDB_PROJECT_ROOT."
+                )
+            schemas = {}
+        else:
+            schemas = cls._load_schemas(schema_dir, require_schema=not allow_incomplete)
 
-        schemas = cls._load_schemas(schema_dir)
-        table_paths = cls._load_tables(project_root, data_dir, project_config)
-        lenses = cls._load_lenses(project_root, lenses_dir, project_config)
+        table_paths = cls._load_tables(
+            project_root,
+            data_dir,
+            project_config,
+            require_tables=not allow_incomplete,
+        )
+        lenses = cls._load_lenses(
+            project_root,
+            lenses_dir,
+            project_config,
+            require_lenses=not allow_incomplete,
+        )
         policies = cls._load_policies(policies_dir)
         view_page_size = cls._load_view_page_size(project_config)
 
@@ -165,6 +184,16 @@ class Project:
         if validate_configuration:
             project.validate_configuration()
         return project
+
+    @staticmethod
+    def _resolve_project_root(root: str | Path | None) -> Path:
+        if root is not None:
+            return Path(root).resolve()
+        cwd = Path.cwd().resolve()
+        for candidate in [cwd, *cwd.parents]:
+            if (candidate / ".lenzdb").exists():
+                return candidate
+        return cwd
 
     @staticmethod
     def _load_yaml(path: Path) -> Any:
@@ -198,7 +227,7 @@ class Project:
         return page_size
 
     @classmethod
-    def _load_schemas(cls, schema_dir: Path) -> dict[str, TableSchema]:
+    def _load_schemas(cls, schema_dir: Path, *, require_schema: bool = True) -> dict[str, TableSchema]:
         schemas: dict[str, TableSchema] = {}
         for path in sorted(schema_dir.glob("*.y*ml")):
             schema = TableSchema.model_validate(cls._load_yaml(path))
@@ -207,13 +236,18 @@ class Project:
             if table_key in schemas:
                 raise ProjectError(f"Duplicate schema for table {table_key!r}")
             schemas[table_key] = schema
-        if not schemas:
+        if require_schema and not schemas:
             raise ProjectError(f"No schema files found in {schema_dir}")
         return schemas
 
     @classmethod
     def _load_tables(
-        cls, project_root: Path, data_dir: Path, project_config: dict[str, Any]
+        cls,
+        project_root: Path,
+        data_dir: Path,
+        project_config: dict[str, Any],
+        *,
+        require_tables: bool = True,
     ) -> dict[str, Path]:
         table_paths: dict[str, Path] = {}
         for source_dir in [project_root, data_dir]:
@@ -234,8 +268,9 @@ class Project:
             suffix=".csv",
             resource_kind="CSV table",
             resources=table_paths,
+            require_existing=require_tables,
         )
-        if not table_paths:
+        if require_tables and not table_paths:
             raise ProjectError(
                 f"No CSV table files found in {project_root} or {data_dir}"
             )
@@ -243,7 +278,12 @@ class Project:
 
     @classmethod
     def _load_lenses(
-        cls, project_root: Path, lenses_dir: Path, project_config: dict[str, Any]
+        cls,
+        project_root: Path,
+        lenses_dir: Path,
+        project_config: dict[str, Any],
+        *,
+        require_lenses: bool = True,
     ) -> dict[str, Path]:
         lenses: dict[str, Path] = {}
         for source_dir in [project_root, lenses_dir]:
@@ -264,8 +304,9 @@ class Project:
             suffix=".sql",
             resource_kind="lens",
             resources=lenses,
+            require_existing=require_lenses,
         )
-        if not lenses:
+        if require_lenses and not lenses:
             raise ProjectError(
                 f"No lens SQL files found in {project_root} or {lenses_dir}"
             )
@@ -280,6 +321,7 @@ class Project:
         suffix: str,
         resource_kind: str,
         resources: dict[str, Path],
+        require_existing: bool = True,
     ) -> None:
         for index, entry in enumerate(entries, start=1):
             if not isinstance(entry, dict):
@@ -338,11 +380,27 @@ class Project:
                 paths = [resolved_path]
 
             if not paths:
-                raise ProjectError(f"Registered {resource_kind} path matched no {suffix} files: {path_value}")
+                if require_existing:
+                    raise ProjectError(f"Registered {resource_kind} path matched no {suffix} files: {path_value}")
+                continue
 
             for path in paths:
                 if not path.exists():
-                    raise ProjectError(f"Registered {resource_kind} path does not exist: {path}")
+                    if require_existing:
+                        raise ProjectError(f"Registered {resource_kind} path does not exist: {path}")
+                    if path.suffix != suffix:
+                        raise ProjectError(
+                            f"Registered {resource_kind} path must point to a {suffix} file: {path}"
+                        )
+                    path_namespace, path_name = parse_namespaced_name(path.stem)
+                    cls._add_resource_path(
+                        resources,
+                        namespace=namespace or path_namespace,
+                        name=configured_name or path_name,
+                        path=path,
+                        resource_kind=resource_kind,
+                    )
+                    continue
                 if not path.is_file() or path.suffix != suffix:
                     raise ProjectError(
                         f"Registered {resource_kind} path must point to a {suffix} file: {path}"
