@@ -23,6 +23,17 @@ def test_view_table_markdown(runner, example_project: Path) -> None:
     assert "p-1" in result.stdout
 
 
+def test_view_ignores_unrelated_untracked_csv(runner, example_project: Path) -> None:
+    (example_project / "bar.snoo.csv").write_text("id,name\ns-1,Snoo\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["view", "tasks", "--project", str(example_project), "--format", "markdown"]
+    )
+
+    assert result.exit_code == 0
+    assert "p-1" in result.stdout
+
+
 def test_view_table_output_is_not_duplicated(runner, example_project: Path) -> None:
     result = runner.invoke(app, ["view", "open_tasks", "--project", str(example_project)])
     assert result.exit_code == 0
@@ -314,6 +325,63 @@ def test_list_resources_marks_header_mismatch_as_state_error(
 
     assert result.exit_code == 0
     assert "| table | main | tasks | tasks.csv | error | header_mismatch:" in result.stdout
+
+
+def test_add_untracked_root_csv_by_table_name(runner, example_project: Path) -> None:
+    (example_project / "new_table.csv").write_text(
+        "key,name\n"
+        "n-1,New row\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app, ["add", "new_table", "--primary-key", "key", "--project", str(example_project)]
+    )
+
+    assert result.exit_code == 0
+    assert "Added table main.new_table" in result.stdout
+    schema = example_project / ".lenzdb" / "schema" / "main.new_table.yaml"
+    assert schema.exists()
+    assert "primary_key: key" in schema.read_text(encoding="utf-8")
+
+    view_result = runner.invoke(
+        app, ["view", "new_table", "--project", str(example_project), "--format", "markdown"]
+    )
+    assert view_result.exit_code == 0
+    assert "| n-1 | New row |" in view_result.stdout
+
+
+def test_add_csv_in_subfolder_registers_project_path(runner, example_project: Path) -> None:
+    imports = example_project / "imports"
+    imports.mkdir()
+    (imports / "new_notes.csv").write_text(
+        "code,text\n"
+        "note-1,Useful\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "imports/new_notes.csv",
+            "--primary-key",
+            "code",
+            "--project",
+            str(example_project),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Updated: .lenzdb/project.yaml" in result.stdout
+    project_config = (example_project / ".lenzdb" / "project.yaml").read_text(encoding="utf-8")
+    assert "path: imports/new_notes.csv" in project_config
+
+    view_result = runner.invoke(
+        app, ["view", "new_notes", "--project", str(example_project), "--format", "markdown"]
+    )
+    assert view_result.exit_code == 0
+    assert "| note-1 | Useful |" in view_result.stdout
 
 
 def test_explain_table_resource(runner, example_project: Path) -> None:

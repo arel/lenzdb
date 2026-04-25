@@ -5,11 +5,13 @@ from __future__ import annotations
 import inspect
 import os
 import csv
+import sys
 from functools import wraps
 from pathlib import Path
 from typing import Annotated
 
 import typer
+import yaml
 
 from lenzdb.analysis import analyze_lens, analyze_resource
 from lenzdb.engine import ResourceQuery, query_lens, query_resource, query_resource_view
@@ -23,7 +25,15 @@ from lenzdb.planner import (
     read_snapshot_csv,
     snapshot_rows,
 )
-from lenzdb.project import Project, serialize_value, split_resource_key
+from lenzdb.project import (
+    DEFAULT_NAMESPACE,
+    TABLES_CONFIG_KEY,
+    Project,
+    parse_namespaced_name,
+    resource_key,
+    serialize_value,
+    split_resource_key,
+)
 from lenzdb.render import render_analysis, render_diff, render_plan, render_view
 
 app = typer.Typer(help="LenzDB CLI")
@@ -52,7 +62,7 @@ def load_project(project_root: Path | None, *, validate_configuration: bool = Tr
 
 def complete_project_resource(incomplete: str) -> list[str]:
     try:
-        project = load_project(None)
+        project = load_project(None, validate_configuration=False)
     except LenzError:
         return []
     names = {*project.lenses, *project.schemas}
@@ -62,7 +72,7 @@ def complete_project_resource(incomplete: str) -> list[str]:
 
 def complete_lens(incomplete: str) -> list[str]:
     try:
-        project = load_project(None)
+        project = load_project(None, validate_configuration=False)
     except LenzError:
         return []
     names = set(project.lenses)
@@ -237,6 +247,200 @@ def validate_positive(value: int | None, *, option_name: str) -> None:
         raise LenzError(f"{option_name} must be one or greater")
 
 
+def read_csv_header(path: Path) -> list[str]:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.reader(handle)
+            header = next(reader, None)
+    except OSError as exc:
+        raise LenzError(f"Cannot read CSV file {path}: {exc}") from exc
+    if not header:
+        raise LenzError(f"CSV file has no header row: {path}")
+    if any(not column for column in header):
+        raise LenzError(f"CSV header must not contain empty column names: {path}")
+    duplicates = sorted({column for column in header if header.count(column) > 1})
+    if duplicates:
+        raise LenzError(f"CSV header contains duplicate column names: {', '.join(duplicates)}")
+    return header
+
+
+def choose_primary_key(header: list[str], primary_key: str | None) -> str:
+    if primary_key is not None:
+        if primary_key not in header:
+            raise LenzError(
+                f"Primary key column {primary_key!r} is not in the CSV header. "
+                f"Available columns: {', '.join(header)}"
+            )
+        return primary_key
+    if "id" in header:
+        return "id"
+    if sys.stdin.isatty():
+        selected = typer.prompt("Primary key column", default=header[0])
+        if selected not in header:
+            raise LenzError(
+                f"Primary key column {selected!r} is not in the CSV header. "
+                f"Available columns: {', '.join(header)}"
+            )
+        return selected
+    raise LenzError("CSV has no 'id' column. Pass --primary-key to choose one.")
+
+
+def validate_csv_primary_key(path: Path, primary_key: str) -> None:
+    seen: set[str] = set()
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for line_number, row in enumerate(reader, start=2):
+                value = row.get(primary_key, "")
+                if value == "":
+                    raise LenzError(
+                        f"CSV primary key {primary_key!r} is empty at {path}:{line_number}"
+                    )
+                if value in seen:
+                    raise LenzError(
+                        f"CSV primary key {primary_key!r} has duplicate value {value!r}"
+                    )
+                seen.add(value)
+    except OSError as exc:
+        raise LenzError(f"Cannot read CSV file {path}: {exc}") from exc
+
+
+def project_relative_path(project: Project, path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(project.root))
+    except ValueError as exc:
+        raise LenzError(f"CSV path must be inside the project root: {path}") from exc
+
+
+def is_auto_discovered_table_path(project: Project, path: Path) -> bool:
+    resolved = path.resolve()
+    return (
+        resolved.parent == project.root
+        or resolved.parent == project.root / ".lenzdb" / "data"
+    )
+
+
+def resolve_add_csv(project: Project, target: str) -> tuple[str, Path]:
+    target_path = Path(target)
+    if target_path.suffix == ".csv" or target_path.exists():
+        path = (
+            (project.root / target_path).resolve()
+            if not target_path.is_absolute()
+            else target_path.resolve()
+        )
+        if not path.exists():
+            raise LenzError(f"CSV file does not exist: {path}")
+        if not path.is_file() or path.suffix != ".csv":
+            raise LenzError(f"Path must point to a .csv file: {path}")
+        namespace, name = parse_namespaced_name(path.stem)
+        return resource_key(namespace, name), path
+
+    namespace, name = parse_namespaced_name(target)
+    table_key = resource_key(namespace, name)
+    path = project.table_paths.get(table_key)
+    if path is None:
+        raise LenzError(f"Unknown untracked CSV table {target!r}; pass a CSV path instead")
+    return table_key, path
+
+
+def schema_document(table_key: str, primary_key: str, header: list[str]) -> dict[str, object]:
+    namespace, name = split_resource_key(table_key)
+    table_name = name if namespace == DEFAULT_NAMESPACE else table_key
+    return {
+        "table": table_name,
+        "primary_key": primary_key,
+        "columns": {
+            column: {"type": "string", **({"immutable": True} if column == primary_key else {})}
+            for column in header
+        },
+    }
+
+
+def write_schema_file(project: Project, table_key: str, document: dict[str, object]) -> Path:
+    path = project.schema_dir / f"{table_key}.yaml"
+    if path.exists():
+        raise LenzError(f"Schema file already exists: {path}")
+    project.schema_dir.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(document, handle, sort_keys=False)
+    return path
+
+
+def ensure_table_registered(project: Project, table_key: str, path: Path) -> bool:
+    if is_auto_discovered_table_path(project, path):
+        return False
+    config_path = project.root / ".lenzdb" / "project.yaml"
+    if config_path.exists():
+        config = Project._load_yaml(config_path)
+        if not isinstance(config, dict):
+            raise LenzError(f"Project config must be a mapping: {config_path}")
+    else:
+        config = {}
+    tables = config.setdefault(TABLES_CONFIG_KEY, [])
+    if not isinstance(tables, list):
+        raise LenzError(f"Project config field {TABLES_CONFIG_KEY!r} must be a list")
+
+    relative = project_relative_path(project, path)
+    namespace, name = split_resource_key(table_key)
+    entry: dict[str, str] = {"path": relative}
+    path_namespace, path_name = parse_namespaced_name(path.stem)
+    if namespace != path_namespace:
+        entry["namespace"] = namespace
+    if name != path_name:
+        entry["name"] = name
+
+    for existing in tables:
+        if isinstance(existing, dict) and existing.get("path") == relative:
+            existing.update(entry)
+            break
+    else:
+        tables.append(entry)
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    with config_path.open("w", encoding="utf-8") as handle:
+        yaml.safe_dump(config, handle, sort_keys=False)
+    return True
+
+
+@app.command()
+@handle_errors
+def add(
+    target: Annotated[
+        str,
+        typer.Argument(help="Untracked table name or path to a CSV file to add."),
+    ],
+    primary_key: Annotated[
+        str | None,
+        typer.Option(
+            "--primary-key",
+            "-p",
+            help="Primary key column. Defaults to 'id' when present; otherwise prompts on a TTY.",
+        ),
+    ] = None,
+    project: ProjectOption = None,
+) -> None:
+    project_instance = load_project(project, validate_configuration=False)
+    table_key, path = resolve_add_csv(project_instance, target)
+    if table_key in project_instance.schemas:
+        raise LenzError(f"Table {table_key!r} already has a schema")
+
+    header = read_csv_header(path)
+    selected_primary_key = choose_primary_key(header, primary_key)
+    validate_csv_primary_key(path, selected_primary_key)
+
+    schema_path = write_schema_file(
+        project_instance,
+        table_key,
+        schema_document(table_key, selected_primary_key, header),
+    )
+    registered = ensure_table_registered(project_instance, table_key, path)
+
+    typer.echo(f"Added table {table_key}")
+    typer.echo(f"Schema: {relative_path(project_instance, schema_path)}")
+    if registered:
+        typer.echo("Updated: .lenzdb/project.yaml")
+
+
 @app.command()
 @handle_errors
 def view(
@@ -307,7 +511,7 @@ def view(
     ] = None,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project)
+    project_instance = load_project(project, validate_configuration=False)
     selected_columns = parse_comma_list(columns, option_name="--columns")
     order_columns = parse_comma_list(order, option_name="--order")
     if sql is not None and not sql.strip():
@@ -407,7 +611,7 @@ def explain(
     ],
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project)
+    project_instance = load_project(project, validate_configuration=False)
     analysis = analyze_resource(project_instance, resource_name)
     typer.echo(render_analysis(analysis), nl=False)
 
@@ -422,7 +626,7 @@ def diff(
     edited_csv: Path,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project)
+    project_instance = load_project(project, validate_configuration=False)
     result = query_resource(project_instance, resource_name)
     analysis = analyze_resource(project_instance, resource_name)
     current_rows = snapshot_rows(result.columns, result.rows)
@@ -446,7 +650,7 @@ def plan(
     edited_csv: Path,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project)
+    project_instance = load_project(project, validate_configuration=False)
     mutation_plan = build_mutation_plan(project_instance, resource_name, edited_csv)
     typer.echo(render_plan(mutation_plan), nl=False)
 
@@ -461,7 +665,7 @@ def apply(
     edited_csv: Path,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project)
+    project_instance = load_project(project, validate_configuration=False)
     mutation_plan = build_mutation_plan(project_instance, resource_name, edited_csv)
     typer.echo(render_plan(mutation_plan), nl=False)
     if not mutation_plan.has_changes:
@@ -488,7 +692,7 @@ def edit(
     ] = False,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project)
+    project_instance = load_project(project, validate_configuration=False)
     editor_command = editor or os.environ.get("EDITOR")
     if not editor_command:
         raise LenzError("No editor configured. Set $EDITOR or pass --editor.")

@@ -95,15 +95,39 @@ def resolve_sql_table_references(project: Project, sql: str) -> str:
     return expression.sql(dialect="duckdb")
 
 
+def referenced_sql_tables(project: Project, sql: str) -> set[str]:
+    try:
+        expression = parse_one(sql, read="duckdb")
+    except ParseError:
+        return set()
+
+    cte_names = {cte.alias for cte in expression.find_all(exp.CTE)}
+    tables: set[str] = set()
+    for table_expression in expression.find_all(exp.Table):
+        if not table_expression.db and table_expression.name in cte_names:
+            continue
+        tables.add(
+            project.resolve_table_name(table_expression.name, table_expression.db or None)
+        )
+    return tables
+
+
 def query_lens(
     project: Project, lens_name: str, rows_by_table: dict[str, list[dict[str, Any]]] | None = None
 ) -> QueryResult:
+    resolved_lens_name = project.resolve_lens_name(lens_name)
     sql = project.lens_sql(lens_name)
     try:
         sql = resolve_sql_table_references(project, sql)
     except ProjectError as exc:
         raise ProjectError(f"Invalid SQL for lens {lens_name!r}: {exc}") from exc
-    connection = build_connection(project, rows_by_table)
+    scoped_rows = rows_by_table
+    if scoped_rows is None:
+        scoped_rows = {
+            table: project.load_table_rows(table)
+            for table in referenced_sql_tables(project, project.lens_sql(resolved_lens_name))
+        }
+    connection = build_connection(project, scoped_rows)
     try:
         cursor = connection.execute(sql)
         columns = [description[0] for description in cursor.description]
@@ -132,6 +156,17 @@ def resource_sql(project: Project, resource_name: str) -> str:
     if resource_kind == "lens":
         return lens_sql(project, resolved_name)
     return table_sql(project, resolved_name)
+
+
+def resource_tables(project: Project, resource_name: str) -> set[str]:
+    resource_kind, resolved_name = project.resolve_resource_name(resource_name)
+    if resource_kind == "lens":
+        return referenced_sql_tables(project, project.lens_sql(resolved_name))
+    return {resolved_name}
+
+
+def load_resource_rows(project: Project, resource_name: str) -> dict[str, list[dict[str, Any]]]:
+    return {table: project.load_table_rows(table) for table in resource_tables(project, resource_name)}
 
 
 def fetch_query_result(
@@ -209,7 +244,7 @@ def build_resource_view_sql(
 
 def query_resource_view(project: Project, resource_name: str, query: ResourceQuery) -> QueryResult:
     base_sql = resource_sql(project, resource_name)
-    connection = build_connection(project)
+    connection = build_connection(project, load_resource_rows(project, resource_name))
     try:
         base_result = fetch_query_result(
             connection,
@@ -227,7 +262,9 @@ def query_table(
 ) -> QueryResult:
     resolved_table = project.resolve_table_name(table_name)
     columns = project.table_headers(resolved_table)
-    rows = (rows_by_table or project.load_all_rows()).get(resolved_table, [])
+    rows = (rows_by_table or {resolved_table: project.load_table_rows(resolved_table)}).get(
+        resolved_table, []
+    )
     return QueryResult(columns=columns, rows=rows)
 
 
