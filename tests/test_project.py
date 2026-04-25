@@ -38,12 +38,22 @@ def test_main_namespace_resolves_tables_and_lenses(example_project: Path) -> Non
     assert project.lens_sql("main.open_tasks") == project.lens_sql("open_tasks")
 
 
-def test_dotted_lens_filename_resolves_in_main_namespace(example_project: Path) -> None:
+def test_dotted_lens_filename_resolves_as_namespace_and_name(example_project: Path) -> None:
     (example_project / "bar.foo.sql").write_text("select id, title from tasks\n", encoding="utf-8")
     project = Project.discover(example_project)
 
-    assert project.lenses["main.bar.foo"] == example_project / "bar.foo.sql"
-    assert project.lens_sql("main.bar.foo") == project.lens_sql("bar.foo")
+    assert project.lenses["bar.foo"] == example_project / "bar.foo.sql"
+    assert project.lens_sql("bar.foo") == "select id, title from tasks\n"
+
+
+def test_multi_dot_lens_filename_uses_final_segment_as_name(example_project: Path) -> None:
+    (example_project / "other.thing.bar.foo.sql").write_text(
+        "select id, title from tasks\n", encoding="utf-8"
+    )
+    project = Project.discover(example_project)
+
+    assert project.lenses["other.thing.bar.foo"] == example_project / "other.thing.bar.foo.sql"
+    assert project.lens_sql("other.thing.bar.foo") == "select id, title from tasks\n"
 
 
 def test_unknown_namespace_is_rejected(example_project: Path) -> None:
@@ -97,6 +107,37 @@ def test_registered_single_files_default_to_main_namespace(example_project: Path
 
     assert project.table_path("notes") == imports / "notes.csv"
     assert project.lens_sql("notes_view") == "select id, text from notes\n"
+
+
+def test_registered_file_can_derive_namespace_from_dotted_name(example_project: Path) -> None:
+    reports = example_project / "reports"
+    reports.mkdir()
+    (reports / "client.notes_view.sql").write_text("select id, title from tasks\n", encoding="utf-8")
+    (example_project / ".lenzdb" / "project.yaml").write_text(
+        "lenses:\n"
+        "  - path: reports/client.notes_view.sql\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+
+    assert project.lenses["client.notes_view"] == reports / "client.notes_view.sql"
+
+
+def test_registered_namespace_uses_final_filename_segment_as_name(example_project: Path) -> None:
+    reports = example_project / "reports"
+    reports.mkdir()
+    (reports / "client.notes_view.sql").write_text("select id, title from tasks\n", encoding="utf-8")
+    (example_project / ".lenzdb" / "project.yaml").write_text(
+        "lenses:\n"
+        "  - path: reports/client.notes_view.sql\n"
+        "    namespace: acme\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+
+    assert project.lenses["acme.notes_view"] == reports / "client.notes_view.sql"
 
 
 def test_registered_folders_and_globs_require_namespace(example_project: Path) -> None:

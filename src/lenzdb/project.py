@@ -30,7 +30,7 @@ def parse_qualified_name(value: str) -> tuple[str, str]:
 
 
 def parse_namespaced_name(value: str, *, default_namespace: str = DEFAULT_NAMESPACE) -> tuple[str, str]:
-    parts = value.split(".", 1)
+    parts = value.rsplit(".", 1)
     if len(parts) == 1 and parts[0]:
         return default_namespace, parts[0]
     if len(parts) == 2 and parts[0] and parts[1]:
@@ -219,10 +219,11 @@ class Project:
             if not source_dir.exists():
                 continue
             for path in sorted(source_dir.glob("*.csv")):
+                namespace, name = parse_namespaced_name(path.stem)
                 cls._add_resource_path(
                     table_paths,
-                    namespace=DEFAULT_NAMESPACE,
-                    name=path.stem,
+                    namespace=namespace,
+                    name=name,
                     path=path,
                     resource_kind="CSV table",
                 )
@@ -248,10 +249,11 @@ class Project:
             if not source_dir.exists():
                 continue
             for path in sorted(source_dir.glob("*.sql")):
+                namespace, name = parse_namespaced_name(path.stem)
                 cls._add_resource_path(
                     lenses,
-                    namespace=DEFAULT_NAMESPACE,
-                    name=path.stem,
+                    namespace=namespace,
+                    name=name,
                     path=path,
                     resource_kind="lens",
                 )
@@ -305,6 +307,10 @@ class Project:
                 not isinstance(configured_name, str) or not configured_name
             ):
                 raise ProjectError(f"Registered {resource_kind} entry #{index} has an invalid name")
+            if isinstance(configured_name, str) and "." in configured_name:
+                raise ProjectError(
+                    f"Registered {resource_kind} entry #{index} name must not include a namespace"
+                )
 
             is_glob = has_glob_pattern(path_value)
             resolved_path = (project_root / path_pattern).resolve()
@@ -318,7 +324,7 @@ class Project:
                     f"Registered {resource_kind} folders and globs cannot specify a single name: {path_value}"
                 )
 
-            namespace = configured_namespace or DEFAULT_NAMESPACE
+            namespace = configured_namespace
             if is_glob:
                 paths = sorted(
                     path.resolve()
@@ -340,10 +346,11 @@ class Project:
                     raise ProjectError(
                         f"Registered {resource_kind} path must point to a {suffix} file: {path}"
                     )
+                path_namespace, path_name = parse_namespaced_name(path.stem)
                 cls._add_resource_path(
                     resources,
-                    namespace=namespace,
-                    name=configured_name or path.stem,
+                    namespace=namespace or path_namespace,
+                    name=configured_name or path_name,
                     path=path,
                     resource_kind=resource_kind,
                 )
@@ -444,11 +451,6 @@ class Project:
                     )
                 raise ProjectError(f"Unknown {resource_kind} {resource_name!r}")
             resolved_namespace, name = parse_namespaced_name(resource_name)
-            key = resource_key(resolved_namespace, name)
-            if key not in resources and resolved_namespace not in self._resource_namespaces(resources):
-                default_key = resource_key(DEFAULT_NAMESPACE, resource_name)
-                if default_key in resources:
-                    return default_key
 
         key = resource_key(resolved_namespace, name)
         if key not in resources and resolved_namespace not in self._resource_namespaces(resources):
