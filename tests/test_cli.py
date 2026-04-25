@@ -65,6 +65,63 @@ def test_view_columns_filter_and_order(runner, example_project: Path) -> None:
     assert result.stdout.index("Ship CLI skeleton") < result.stdout.index("Write GETTING started docs")
 
 
+def test_view_tsv_and_yaml_formats(runner, example_project: Path) -> None:
+    tsv_result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "tsv",
+            "--columns",
+            "id,title",
+            "--limit",
+            "1",
+        ],
+    )
+    yaml_result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "yaml",
+            "--columns",
+            "id,title",
+            "--limit",
+            "1",
+        ],
+    )
+
+    assert tsv_result.exit_code == 0
+    assert "id\ttitle\n" in tsv_result.stdout
+    assert "t-1\tShip CLI skeleton\n" in tsv_result.stdout
+    assert yaml_result.exit_code == 0
+    assert "- id: t-1\n  title: Ship CLI skeleton\n" in yaml_result.stdout
+
+
+def test_view_help_lists_output_formats(runner) -> None:
+    result = runner.invoke(app, ["view", "--help"])
+
+    assert result.exit_code == 0
+    assert "Output format:" in result.stdout
+    for output_format in ["table", "markdown", "csv", "tsv", "json", "ndjson", "yaml", "html"]:
+        assert output_format in result.stdout
+
+
+def test_list_help_lists_output_formats(runner) -> None:
+    result = runner.invoke(app, ["list", "--help"])
+
+    assert result.exit_code == 0
+    assert "Output format:" in result.stdout
+    for output_format in ["table", "markdown", "csv", "tsv", "json", "ndjson", "yaml", "html"]:
+        assert output_format in result.stdout
+
+
 def test_view_paginates_with_project_page_size(runner, example_project: Path) -> None:
     (example_project / ".lenzdb" / "project.yaml").write_text(
         "view:\n"
@@ -112,6 +169,73 @@ def test_view_count_allows_filter(runner, example_project: Path) -> None:
     assert result.exit_code == 0
     assert "| count |" in result.stdout
     assert "| 1 |" in result.stdout
+
+
+def test_view_distinct_single_column(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--distinct",
+            "project_id",
+            "--order",
+            "project_id",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "| project_id |" in result.stdout
+    assert "| p-1 |" in result.stdout
+    assert "| p-2 |" in result.stdout
+    assert result.stdout.count("| p-1 |") == 1
+
+
+def test_view_distinct_multiple_columns(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--distinct",
+            "status,project_id",
+            "--order",
+            "status,project_id",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "| status | project_id |" in result.stdout
+    assert "| doing | p-2 |" in result.stdout
+    assert "| done | p-1 |" in result.stdout
+    assert "| todo | p-1 |" in result.stdout
+
+
+def test_view_distinct_rejects_columns(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--distinct",
+            "status",
+            "--columns",
+            "id,status",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "--distinct cannot be combined with --columns" in result.stderr
 
 
 def test_view_sql_uses_resource_alias(runner, example_project: Path) -> None:
@@ -310,6 +434,60 @@ def test_list_resources_with_missing_and_untracked_csvs(runner, example_project:
     assert "| table | bar | snoo | bar.snoo.csv | untracked |" in result.stdout
 
 
+def test_list_resources_with_missing_registered_csv(runner, example_project: Path) -> None:
+    (example_project / ".lenzdb" / "schema" / "main.pear.yaml").write_text(
+        "table: pear\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  name:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+    (example_project / ".lenzdb" / "project.yaml").write_text(
+        "tables:\n"
+        "  - path: somedir/pear.csv\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| table | main | pear | somedir/pear.csv | missing |" in result.stdout
+
+
+def test_list_resources_without_lenzdb_shows_untracked_csvs(runner, example_project: Path) -> None:
+    lenz_dir = example_project / ".lenzdb"
+    for path in sorted(lenz_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        else:
+            path.rmdir()
+    lenz_dir.rmdir()
+
+    result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| table | main | projects | projects.csv | untracked |" in result.stdout
+    assert "| table | main | tasks | tasks.csv | untracked |" in result.stdout
+
+
+def test_list_resources_in_current_subdir_shows_untracked_csv(
+    runner, example_project: Path, monkeypatch
+) -> None:
+    somedir = example_project / "somedir"
+    somedir.mkdir()
+    (somedir / "pear.csv").write_text("id,name\np-1,Pear\n", encoding="utf-8")
+    monkeypatch.chdir(somedir)
+
+    result = runner.invoke(app, ["list", "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| table | main | pear | somedir/pear.csv | untracked |" in result.stdout
+
+
 def test_list_resources_marks_header_mismatch_as_state_error(
     runner, example_project: Path
 ) -> None:
@@ -382,6 +560,82 @@ def test_add_csv_in_subfolder_registers_project_path(runner, example_project: Pa
     )
     assert view_result.exit_code == 0
     assert "| note-1 | Useful |" in view_result.stdout
+
+
+def test_add_csv_path_is_resolved_from_current_dir(
+    runner, example_project: Path, monkeypatch
+) -> None:
+    somedir = example_project / "somedir"
+    somedir.mkdir()
+    (somedir / "pear.csv").write_text(
+        "id,name\n"
+        "p-1,Pear\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(somedir)
+
+    result = runner.invoke(app, ["add", "./pear.csv", "--primary-key", "id"])
+
+    assert result.exit_code == 0
+    assert "Added table main.pear" in result.stdout
+    project_config = (example_project / ".lenzdb" / "project.yaml").read_text(encoding="utf-8")
+    assert "path: somedir/pear.csv" in project_config
+    assert (example_project / ".lenzdb" / "schema" / "main.pear.yaml").exists()
+
+
+def test_add_csv_with_composite_primary_key(runner, example_project: Path) -> None:
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-2,member\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "memberships",
+            "--primary-key",
+            "org_id,user_id",
+            "--project",
+            str(example_project),
+        ],
+    )
+
+    assert result.exit_code == 0
+    schema = (example_project / ".lenzdb" / "schema" / "main.memberships.yaml").read_text(
+        encoding="utf-8"
+    )
+    assert "primary_key:\n- org_id\n- user_id\n" in schema
+    assert "org_id:\n    type: string\n    immutable: true\n" in schema
+    assert "user_id:\n    type: string\n    immutable: true\n" in schema
+
+
+def test_add_csv_rejects_duplicate_composite_primary_key(
+    runner, example_project: Path
+) -> None:
+    (example_project / "memberships.csv").write_text(
+        "org_id,user_id,role\n"
+        "o-1,u-1,admin\n"
+        "o-1,u-1,member\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "add",
+            "memberships",
+            "--primary-key",
+            "org_id,user_id",
+            "--project",
+            str(example_project),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "duplicate value 'o-1 | u-1'" in result.stderr
 
 
 def test_explain_table_resource(runner, example_project: Path) -> None:

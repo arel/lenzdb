@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import inspect
 import os
-import csv
 import sys
 from functools import wraps
 from pathlib import Path
@@ -29,9 +29,9 @@ from lenzdb.project import (
     DEFAULT_NAMESPACE,
     TABLES_CONFIG_KEY,
     Project,
+    normalize_primary_key,
     parse_namespaced_name,
     resource_key,
-    serialize_value,
     split_resource_key,
 )
 from lenzdb.render import render_analysis, render_diff, render_plan, render_view
@@ -40,6 +40,7 @@ app = typer.Typer(help="LenzDB CLI")
 PROJECT_ROOT_ENV_VAR = "LENZDB_PROJECT_ROOT"
 EDITOR_ENV_VAR = "LENZDB_EDITOR"
 FALLBACK_EDITOR_ENV_VAR = "EDITOR"
+OUTPUT_FORMAT_HELP = "Output format: table, markdown, csv, tsv, json, ndjson, yaml, html."
 
 ProjectOption = Annotated[
     Path | None,
@@ -55,11 +56,20 @@ ProjectOption = Annotated[
 ]
 
 
-def load_project(project_root: Path | None, *, validate_configuration: bool = True) -> Project:
+def load_project(
+    project_root: Path | None,
+    *,
+    validate_configuration: bool = True,
+    allow_incomplete: bool = False,
+) -> Project:
     selected_root: Path | str | None = project_root
     if selected_root is None:
         selected_root = os.environ.get(PROJECT_ROOT_ENV_VAR) or None
-    return Project.discover(selected_root, validate_configuration=validate_configuration)
+    return Project.discover(
+        selected_root,
+        validate_configuration=validate_configuration,
+        allow_incomplete=allow_incomplete,
+    )
 
 
 def complete_project_resource(incomplete: str) -> list[str]:
@@ -87,6 +97,26 @@ def project_namespaces(project: Project) -> list[str]:
     namespaces.update(split_resource_key(key)[0] for key in project.table_paths)
     namespaces.update(split_resource_key(key)[0] for key in project.lenses)
     return sorted(namespaces)
+
+
+def add_current_dir_resources(project: Project) -> None:
+    current_dir = Path.cwd().resolve()
+    try:
+        current_dir.relative_to(project.root)
+    except ValueError:
+        return
+    if current_dir == project.root or not current_dir.is_dir():
+        return
+
+    for path in sorted(current_dir.glob("*.csv")):
+        namespace, name = parse_namespaced_name(path.stem)
+        key = resource_key(namespace, name)
+        project.table_paths.setdefault(key, path.resolve())
+
+    for path in sorted(current_dir.glob("*.sql")):
+        namespace, name = parse_namespaced_name(path.stem)
+        key = resource_key(namespace, name)
+        project.lenses.setdefault(key, path.resolve())
 
 
 def relative_path(project: Project, path: Path | None) -> str:
@@ -126,10 +156,14 @@ def header_error_for_table(project: Project, table_name: str) -> str | None:
 
 def state_for_table(project: Project, table_name: str) -> str:
     has_schema = table_name in project.schemas
-    has_csv = table_name in project.table_paths
-    if has_schema and has_csv:
+    path = project.table_paths.get(table_name)
+    has_csv = path is not None
+    has_existing_csv = path is not None and path.exists()
+    if has_schema and has_existing_csv:
         return "error" if header_error_for_table(project, table_name) else "added"
     if has_schema:
+        return "missing"
+    if has_csv and not has_existing_csv:
         return "missing"
     return "untracked"
 
@@ -147,14 +181,19 @@ def check_for_table(project: Project, table_name: str) -> str:
     try:
         rows = project.load_table_rows(table_name)
         schema = project.schema_for(table_name)
-        primary_column = schema.columns[schema.primary_key]
-        seen: set[str] = set()
+        primary_keys = normalize_primary_key(schema.primary_key)
+        seen: set[tuple[str, ...]] = set()
         for row in rows:
-            key = serialize_value(row.get(schema.primary_key), primary_column)
-            if key == "":
-                return f"missing_pk: {schema.primary_key}"
+            key = project.primary_key_tuple(table_name, row)
+            missing_columns = [
+                column_name
+                for column_name, value in zip(primary_keys, key, strict=True)
+                if value == ""
+            ]
+            if missing_columns:
+                return f"missing_pk: {', '.join(missing_columns)}"
             if key in seen:
-                return f"duplicate_pk: {key}"
+                return f"duplicate_pk: {project.primary_key_display(table_name, row)}"
             seen.add(key)
         return "ok"
     except Exception as exc:
@@ -162,10 +201,13 @@ def check_for_table(project: Project, table_name: str) -> str:
 
 
 def state_for_lens(project: Project, lens_name: str) -> str:
-    return "added" if project.lenses.get(lens_name) else "missing"
+    path = project.lenses.get(lens_name)
+    return "added" if path is not None and path.exists() else "missing"
 
 
 def check_for_lens(project: Project, lens_name: str) -> str:
+    if state_for_lens(project, lens_name) != "added":
+        return "missing"
     try:
         analyze_lens(project, lens_name)
         query_lens(project, lens_name)
@@ -266,16 +308,18 @@ def read_csv_header(path: Path) -> list[str]:
     return header
 
 
-def choose_primary_key(header: list[str], primary_key: str | None) -> str:
+def choose_primary_key(header: list[str], primary_key: str | None) -> list[str]:
     if primary_key is not None:
-        if primary_key not in header:
+        selected = parse_comma_list(primary_key, option_name="--primary-key") or []
+        missing = [column for column in selected if column not in header]
+        if missing:
             raise LenzError(
-                f"Primary key column {primary_key!r} is not in the CSV header. "
+                f"Primary key column(s) {', '.join(missing)!r} are not in the CSV header. "
                 f"Available columns: {', '.join(header)}"
             )
-        return primary_key
+        return selected
     if "id" in header:
-        return "id"
+        return ["id"]
     if sys.stdin.isatty():
         selected = typer.prompt("Primary key column", default=header[0])
         if selected not in header:
@@ -283,24 +327,30 @@ def choose_primary_key(header: list[str], primary_key: str | None) -> str:
                 f"Primary key column {selected!r} is not in the CSV header. "
                 f"Available columns: {', '.join(header)}"
             )
-        return selected
+        return [selected]
     raise LenzError("CSV has no 'id' column. Pass --primary-key to choose one.")
 
 
-def validate_csv_primary_key(path: Path, primary_key: str) -> None:
-    seen: set[str] = set()
+def validate_csv_primary_key(path: Path, primary_key: list[str]) -> None:
+    seen: set[tuple[str, ...]] = set()
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
             reader = csv.DictReader(handle)
             for line_number, row in enumerate(reader, start=2):
-                value = row.get(primary_key, "")
-                if value == "":
+                value = tuple(row.get(column, "") for column in primary_key)
+                missing_columns = [
+                    column
+                    for column, column_value in zip(primary_key, value, strict=True)
+                    if column_value == ""
+                ]
+                if missing_columns:
                     raise LenzError(
-                        f"CSV primary key {primary_key!r} is empty at {path}:{line_number}"
+                        f"CSV primary key column(s) {', '.join(missing_columns)!r} "
+                        f"are empty at {path}:{line_number}"
                     )
                 if value in seen:
                     raise LenzError(
-                        f"CSV primary key {primary_key!r} has duplicate value {value!r}"
+                        f"CSV primary key {primary_key!r} has duplicate value {' | '.join(value)!r}"
                     )
                 seen.add(value)
     except OSError as exc:
@@ -325,15 +375,19 @@ def is_auto_discovered_table_path(project: Project, path: Path) -> bool:
 def resolve_add_csv(project: Project, target: str) -> tuple[str, Path]:
     target_path = Path(target)
     if target_path.suffix == ".csv" or target_path.exists():
-        path = (
-            (project.root / target_path).resolve()
-            if not target_path.is_absolute()
-            else target_path.resolve()
-        )
+        if target_path.is_absolute():
+            path = target_path.resolve()
+        else:
+            cwd_path = (Path.cwd() / target_path).resolve()
+            project_path = (project.root / target_path).resolve()
+            path = cwd_path
+            if not path.exists() and project_path != cwd_path:
+                path = project_path
         if not path.exists():
             raise LenzError(f"CSV file does not exist: {path}")
         if not path.is_file() or path.suffix != ".csv":
             raise LenzError(f"Path must point to a .csv file: {path}")
+        project_relative_path(project, path)
         namespace, name = parse_namespaced_name(path.stem)
         return resource_key(namespace, name), path
 
@@ -345,14 +399,15 @@ def resolve_add_csv(project: Project, target: str) -> tuple[str, Path]:
     return table_key, path
 
 
-def schema_document(table_key: str, primary_key: str, header: list[str]) -> dict[str, object]:
+def schema_document(table_key: str, primary_key: list[str], header: list[str]) -> dict[str, object]:
     namespace, name = split_resource_key(table_key)
     table_name = name if namespace == DEFAULT_NAMESPACE else table_key
+    primary_key_value: str | list[str] = primary_key[0] if len(primary_key) == 1 else primary_key
     return {
         "table": table_name,
-        "primary_key": primary_key,
+        "primary_key": primary_key_value,
         "columns": {
-            column: {"type": "string", **({"immutable": True} if column == primary_key else {})}
+            column: {"type": "string", **({"immutable": True} if column in primary_key else {})}
             for column in header
         },
     }
@@ -421,7 +476,12 @@ def add(
     ] = None,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project, validate_configuration=False)
+    project_instance = load_project(
+        project,
+        validate_configuration=False,
+        allow_incomplete=True,
+    )
+    add_current_dir_resources(project_instance)
     table_key, path = resolve_add_csv(project_instance, target)
     if table_key in project_instance.schemas:
         raise LenzError(f"Table {table_key!r} already has a schema")
@@ -456,7 +516,7 @@ def view(
     output_format: str = typer.Option(
         "table",
         "--format",
-        help="Output format.",
+        help=OUTPUT_FORMAT_HELP,
         case_sensitive=False,
         show_default=True,
     ),
@@ -465,6 +525,13 @@ def view(
         typer.Option(
             "--columns",
             help="Comma-separated columns to show, e.g. id,title,status.",
+        ),
+    ] = None,
+    distinct: Annotated[
+        str | None,
+        typer.Option(
+            "--distinct",
+            help="Comma-separated columns whose distinct values should be returned.",
         ),
     ] = None,
     where: Annotated[
@@ -515,6 +582,7 @@ def view(
 ) -> None:
     project_instance = load_project(project, validate_configuration=False)
     selected_columns = parse_comma_list(columns, option_name="--columns")
+    distinct_columns = parse_comma_list(distinct, option_name="--distinct")
     order_columns = parse_comma_list(order, option_name="--order")
     if sql is not None and not sql.strip():
         raise LenzError("--sql must not be empty")
@@ -525,14 +593,34 @@ def view(
 
     convenience_options = [
         option is not None
-        for option in [selected_columns, where, order_columns, limit, offset, page, page_size]
+        for option in [
+            selected_columns,
+            distinct_columns,
+            where,
+            order_columns,
+            limit,
+            offset,
+            page,
+            page_size,
+        ]
     ]
     if sql is not None and (count or any(convenience_options)):
         raise LenzError("--sql cannot be combined with view convenience options")
     if count and any(
-        option is not None for option in [selected_columns, order_columns, limit, offset, page, page_size]
+        option is not None
+        for option in [
+            selected_columns,
+            distinct_columns,
+            order_columns,
+            limit,
+            offset,
+            page,
+            page_size,
+        ]
     ):
         raise LenzError("--count may only be combined with --filter")
+    if distinct_columns is not None and selected_columns is not None:
+        raise LenzError("--distinct cannot be combined with --columns")
     if page is not None and (limit is not None or offset is not None):
         raise LenzError("--page cannot be combined with --limit or --offset")
     if page_size is not None and page is None:
@@ -547,6 +635,7 @@ def view(
 
     query = ResourceQuery(
         columns=selected_columns,
+        distinct=distinct_columns,
         where=where,
         order=order_columns,
         limit=effective_limit,
@@ -582,7 +671,7 @@ def list_resources(
     output_format: str = typer.Option(
         "table",
         "--format",
-        help="Output format.",
+        help=OUTPUT_FORMAT_HELP,
         case_sensitive=False,
         show_default=True,
     ),
@@ -596,7 +685,12 @@ def list_resources(
     ] = False,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project, validate_configuration=False)
+    project_instance = load_project(
+        project,
+        validate_configuration=False,
+        allow_incomplete=True,
+    )
+    add_current_dir_resources(project_instance)
     columns = ["kind", "namespace", "name", "path", "state"]
     if check:
         columns.append("check")
@@ -636,7 +730,7 @@ def diff(
     diff_entries = diff_snapshots(
         current_rows,
         edited_rows,
-        analysis.primary_key_output,
+        analysis.primary_key_outputs,
         result.columns,
     )
     typer.echo(render_diff(diff_entries), nl=False)

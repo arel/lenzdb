@@ -35,14 +35,24 @@ class ColumnSchema(BaseModel):
 
 class TableSchema(BaseModel):
     table: str
-    primary_key: str
+    primary_key: str | list[str]
     columns: dict[str, ColumnSchema]
 
     @model_validator(mode="after")
     def validate_primary_key(self) -> TableSchema:
-        if self.primary_key not in self.columns:
+        primary_keys = [self.primary_key] if isinstance(self.primary_key, str) else self.primary_key
+        if not primary_keys:
+            raise ValueError(f"primary_key must include at least one column for table {self.table!r}")
+        duplicates = sorted({column for column in primary_keys if primary_keys.count(column) > 1})
+        if duplicates:
             raise ValueError(
-                f"primary_key {self.primary_key!r} is not defined in columns for table {self.table!r}"
+                f"primary_key contains duplicate column(s) for table {self.table!r}: "
+                f"{', '.join(duplicates)}"
+            )
+        missing = [column for column in primary_keys if column not in self.columns]
+        if missing:
+            raise ValueError(
+                f"primary_key column(s) {missing!r} are not defined in columns for table {self.table!r}"
             )
         return self
 
@@ -62,6 +72,6 @@ class ReferencePolicy(BaseModel):
 class LensPolicy(BaseModel):
     lens: str
     primary_table: str
-    primary_key: str
+    primary_key: str | list[str]
     editable: dict[str, str] = Field(default_factory=dict)
     references: dict[str, ReferencePolicy] = Field(default_factory=dict)
