@@ -60,4 +60,6 @@ Error: Missing schema directory: /workspaces/lenzdb/.lenzdb/schema
 
 - [x] lnz list should not fail if path is missing (it should list it with "missing" state)
 
+- [ ] add --distinct flag to `lnz view` that takes a list of column names and returns the distinct values for those columns
+
 - [ ] add multi-column PKs feature -- in a separate feature branch
