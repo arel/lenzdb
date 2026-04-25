@@ -1,0 +1,9 @@
+select
+  t.id,
+  t.title,
+  t.status,
+  p.name as project_name
+from tasks as t
+join projects as p on p.id = t.project_id
+where t.status != 'done'
+order by t.id

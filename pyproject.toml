@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lenzdb"
+version = "0.1.0"
+description = "Git-native, text-first relational lenses with safe writeback."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+  { name = "OpenAI Codex" }
+]
+dependencies = [
+  "duckdb>=1.5.0",
+  "pydantic>=2.12.0",
+  "pyyaml>=6.0.0",
+  "rich>=15.0.0",
+  "sqlglot>=30.0.0",
+  "typer>=0.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.0",
+  "ruff>=0.15.0",
+]
+
+[project.scripts]
+lnz = "lenzdb.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lenzdb"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/src",
+  "/tests",
+  "/examples",
+  "/CONTRIBUTORS.md",
+  "/LICENSE",
+  "/README.md",
+  "/pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 140
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "UP"]
