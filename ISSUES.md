@@ -46,8 +46,6 @@ Error: Missing schema directory: /workspaces/lenzdb/.lenzdb/schema
 
 - [x] add deletion logic for "edit"? (compare against original query) -- won't do
 
-- [ ] multi-column PKs? -- separate feature branch
-
 - [x] Naming is consistent: product/docs `LenzDB`, package/repo `lenzdb`, CLI `lnz`, concept `lens`/`lenses`.
 
 - [x] update README with less disjointed and techy humor -- only add a witty comment if it truly begs for it.
@@ -55,3 +53,23 @@ Error: Missing schema directory: /workspaces/lenzdb/.lenzdb/schema
 - [x] accept `$LENZDB_EDITOR` with precedence between `--editor` and `$EDITOR`.
 
 - [x] refactor lnz list
+
+- [ ] `lnz list` should also show any untracked resources in current dir
+- [ ] `lnz add [path]` path CLI should be relative to current dir (and be added relative to the project)
+
+    vscode ➜ .../lenz-db/examples/basic/somedir (main) $ lnz add ./pear.csv
+    Error: CSV file does not exist: /workspaces/lenz-db/examples/basic/pear.csv
+    vscode ➜ .../lenz-db/examples/basic/somedir (main) $ pwd ls
+    /workspaces/lenz-db/examples/basic/somedir
+    vscode ➜ .../lenz-db/examples/basic/somedir (main) $ lnz add somedir/pear.csv
+    Added table main.pear
+
+- [ ] .lenzdb folder should not be required for a project dir to work (to use `lnz list`)
+    vscode ➜ .../lenz-db/examples/basic/somedir (main) $ lnz list --project .
+    Error: No LenzDB project found at /workspaces/lenz-db/examples/basic/somedir. Expected /workspaces/lenz-db/examples/basic/somedir/.lenzdb/schema. Run from a project root, pass --project, or set $LENZDB_PROJECT_ROOT.
+
+- [ ] lnz list should not fail if path is missing (it should list it with "missing" state)
+    vscode ➜ .../lenz-db/examples/basic/somedir (main) $ lnz list
+    Error: Registered CSV table path does not exist: /workspaces/lenz-db/examples/basic/somedir/pear.csv
+
+- [ ] add multi-column PKs feature -- in a separate feature branch
