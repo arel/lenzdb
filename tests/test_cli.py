@@ -65,6 +65,63 @@ def test_view_columns_filter_and_order(runner, example_project: Path) -> None:
     assert result.stdout.index("Ship CLI skeleton") < result.stdout.index("Write GETTING started docs")
 
 
+def test_view_tsv_and_yaml_formats(runner, example_project: Path) -> None:
+    tsv_result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "tsv",
+            "--columns",
+            "id,title",
+            "--limit",
+            "1",
+        ],
+    )
+    yaml_result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "yaml",
+            "--columns",
+            "id,title",
+            "--limit",
+            "1",
+        ],
+    )
+
+    assert tsv_result.exit_code == 0
+    assert "id\ttitle\n" in tsv_result.stdout
+    assert "t-1\tShip CLI skeleton\n" in tsv_result.stdout
+    assert yaml_result.exit_code == 0
+    assert "- id: t-1\n  title: Ship CLI skeleton\n" in yaml_result.stdout
+
+
+def test_view_help_lists_output_formats(runner) -> None:
+    result = runner.invoke(app, ["view", "--help"])
+
+    assert result.exit_code == 0
+    assert "Output format:" in result.stdout
+    for output_format in ["table", "markdown", "csv", "tsv", "json", "ndjson", "yaml", "html"]:
+        assert output_format in result.stdout
+
+
+def test_list_help_lists_output_formats(runner) -> None:
+    result = runner.invoke(app, ["list", "--help"])
+
+    assert result.exit_code == 0
+    assert "Output format:" in result.stdout
+    for output_format in ["table", "markdown", "csv", "tsv", "json", "ndjson", "yaml", "html"]:
+        assert output_format in result.stdout
+
+
 def test_view_paginates_with_project_page_size(runner, example_project: Path) -> None:
     (example_project / ".lenzdb" / "project.yaml").write_text(
         "view:\n"

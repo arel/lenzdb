@@ -8,6 +8,7 @@ import json
 from html import escape
 from typing import Any
 
+import yaml
 from rich.console import Console
 from rich.table import Table
 
@@ -29,8 +30,21 @@ def render_csv(columns: list[str], rows: list[dict[str, Any]]) -> str:
     return buffer.getvalue()
 
 
+def render_tsv(columns: list[str], rows: list[dict[str, Any]]) -> str:
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=columns, delimiter="\t", lineterminator="\n")
+    writer.writeheader()
+    for row in normalize_rows(columns, rows):
+        writer.writerow(row)
+    return buffer.getvalue()
+
+
 def render_json(columns: list[str], rows: list[dict[str, Any]]) -> str:
     return json.dumps(normalize_rows(columns, rows), indent=2) + "\n"
+
+
+def render_yaml(columns: list[str], rows: list[dict[str, Any]]) -> str:
+    return yaml.safe_dump(normalize_rows(columns, rows), sort_keys=False)
 
 
 def render_ndjson(columns: list[str], rows: list[dict[str, Any]]) -> str:
@@ -87,8 +101,12 @@ def render_table(columns: list[str], rows: list[dict[str, Any]]) -> str:
 def render_view(columns: list[str], rows: list[dict[str, Any]], output_format: str) -> str:
     if output_format == "csv":
         return render_csv(columns, rows)
+    if output_format == "tsv":
+        return render_tsv(columns, rows)
     if output_format == "json":
         return render_json(columns, rows)
+    if output_format == "yaml":
+        return render_yaml(columns, rows)
     if output_format == "ndjson":
         return render_ndjson(columns, rows)
     if output_format == "markdown":

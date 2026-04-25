@@ -84,7 +84,8 @@ my-project/
 ```
 
 Root-level `*.csv` files are tables. Root-level `*.sql` files are lenses.
-Schema and policies live under `.lenzdb/`.
+Schema and policies live under `.lenzdb/`. CSV is currently the only supported
+persisted table data format.
 
 LenzDB also reads managed files from:
 
@@ -194,16 +195,26 @@ If `edit` fails after the editor opens, LenzDB preserves the edited CSV in
 file for that resource; pass `--discard-recovery` to start from current data
 instead. A successful edit clears the recovery files for that resource.
 
+Writeback uses CSV snapshots only: `lnz edit` opens a CSV file, and `lnz diff`,
+`lnz plan`, and `lnz apply` read edited CSV files.
+
 ## Output Formats
+
+`lnz view` and `lnz list` support these output formats:
 
 ```bash
 lnz view open_tasks --format table
 lnz view open_tasks --format markdown
 lnz view open_tasks --format csv
+lnz view open_tasks --format tsv
 lnz view open_tasks --format json
 lnz view open_tasks --format ndjson
+lnz view open_tasks --format yaml
 lnz view open_tasks --format html
 ```
+
+These are output formats only; they do not change persisted table files or edit
+snapshot formats.
 
 ## Schema Sketch
 

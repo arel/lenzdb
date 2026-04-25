@@ -64,4 +64,4 @@ Error: Missing schema directory: /workspaces/lenzdb/.lenzdb/schema
 
 - [x] add multi-column PKs feature -- in a separate feature branch
 
-- [ ] add support for other input/output formats such as JSON, JSONL, tsv?
+- [x] add support for output formats such as tsv, YAML

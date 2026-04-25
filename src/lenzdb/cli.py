@@ -40,6 +40,7 @@ app = typer.Typer(help="LenzDB CLI")
 PROJECT_ROOT_ENV_VAR = "LENZDB_PROJECT_ROOT"
 EDITOR_ENV_VAR = "LENZDB_EDITOR"
 FALLBACK_EDITOR_ENV_VAR = "EDITOR"
+OUTPUT_FORMAT_HELP = "Output format: table, markdown, csv, tsv, json, ndjson, yaml, html."
 
 ProjectOption = Annotated[
     Path | None,
@@ -515,7 +516,7 @@ def view(
     output_format: str = typer.Option(
         "table",
         "--format",
-        help="Output format.",
+        help=OUTPUT_FORMAT_HELP,
         case_sensitive=False,
         show_default=True,
     ),
@@ -670,7 +671,7 @@ def list_resources(
     output_format: str = typer.Option(
         "table",
         "--format",
-        help="Output format.",
+        help=OUTPUT_FORMAT_HELP,
         case_sensitive=False,
         show_default=True,
     ),
