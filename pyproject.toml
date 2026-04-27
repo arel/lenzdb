@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "lenzdb"
 version = "0.1.0"
-description = "Git-native, text-first relational lenses with safe writeback."
+description = "SQL views over CSV files, with safe edits back to text."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }

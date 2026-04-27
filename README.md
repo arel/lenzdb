@@ -1,10 +1,12 @@
 # LenzDB
 
-LenzDB is a small, Git-native data tool for CSV-backed project data.
+SQL views over CSV files, with safe edits back to text.
 
-It lets you define SQL views, called lenses, over plain CSV data. You can inspect
-those lenses, edit exported rows, and safely write supported changes back to the
-source CSV files. The files stay text, and Git can track normal diffs.
+LenzDB is a small, Git-native data tool for project data that belongs in plain
+files. You define SQL views, called lenses, over CSV tables; inspect them from
+the CLI; export rows for editing; and safely write supported changes back to the
+source CSV files. Your data stays text, so Git can track ordinary, reviewable
+diffs.
 
 LenzDB is installed as the Python package `lenzdb` and used from the command
 line as `lnz`. A lens is the saved SQL view concept inside a LenzDB project.
@@ -13,10 +15,10 @@ line as `lnz`. A lens is the saved SQL view concept inside a LenzDB project.
 
 ## Why
 
-- Keep data in boring, diffable CSV files.
-- Use SQL for the views people actually want to work with.
+- Keep project data in boring, diffable CSV files.
+- Use SQL to shape the views people actually want to inspect and edit.
 - Put schema, relationships, and write policies next to the data.
-- Review changes with normal Git diffs.
+- Review data changes with normal Git diffs.
 - Edit a projection and write safe changes back to the source rows.
 
 LenzDB is for small project data, operational notes, lightweight catalogs,
