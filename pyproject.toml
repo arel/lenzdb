@@ -30,6 +30,11 @@ dev = [
 [project.scripts]
 lnz = "lenzdb.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/arel/lenzdb"
+Repository = "https://github.com/arel/lenzdb"
+Issues = "https://github.com/arel/lenzdb/issues"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/lenzdb"]
 
