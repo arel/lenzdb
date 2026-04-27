@@ -62,7 +62,7 @@ def test_view_columns_filter_and_order(runner, example_project: Path) -> None:
     assert result.exit_code == 0
     assert "| title | status |" in result.stdout
     assert "project_id" not in result.stdout
-    assert result.stdout.index("Ship CLI skeleton") < result.stdout.index("Write GETTING started docs")
+    assert result.stdout.index("Ship CLI skeleton") < result.stdout.index("Write getting started docs")
 
 
 def test_view_tsv_and_yaml_formats(runner, example_project: Path) -> None:
@@ -146,7 +146,7 @@ def test_view_paginates_with_project_page_size(runner, example_project: Path) ->
     )
 
     assert result.exit_code == 0
-    assert "Write GETTING started docs" in result.stdout
+    assert "Write getting started docs" in result.stdout
     assert "Ship CLI skeleton" not in result.stdout
 
 
@@ -255,7 +255,7 @@ def test_view_sql_uses_resource_alias(runner, example_project: Path) -> None:
 
     assert result.exit_code == 0
     assert "| title |" in result.stdout
-    assert "Write GETTING started docs" in result.stdout
+    assert "Write getting started docs" in result.stdout
     assert "Ship CLI skeleton" not in result.stdout
 
 
@@ -670,7 +670,7 @@ def test_diff_command(runner, example_project: Path, tmp_path: Path) -> None:
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship real CLI,todo,Core Platform\n"
-        "t-2,Write GETTING started docs,doing,Docs Refresh\n",
+        "t-2,Write getting started docs,doing,Docs Refresh\n",
         encoding="utf-8",
     )
     result = runner.invoke(

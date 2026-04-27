@@ -38,7 +38,7 @@ def test_plan_updates_existing_rows(example_project: Path, tmp_path: Path) -> No
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship production CLI,doing,Core Platform\n"
-        "t-2,Write GETTING started docs,doing,Docs Refresh\n",
+        "t-2,Write getting started docs,doing,Docs Refresh\n",
         encoding="utf-8",
     )
 
@@ -55,7 +55,7 @@ def test_plan_inserts_and_creates_reference(example_project: Path, tmp_path: Pat
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship CLI skeleton,todo,Core Platform\n"
-        "t-2,Write GETTING started docs,doing,Docs Refresh\n"
+        "t-2,Write getting started docs,doing,Docs Refresh\n"
         ",Add release checklist,todo,Launch Ops\n",
         encoding="utf-8",
     )
@@ -76,7 +76,7 @@ def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> No
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship production CLI,doing,Core Platform\n"
-        "t-2,Write GETTING started docs,doing,Docs Refresh\n",
+        "t-2,Write getting started docs,doing,Docs Refresh\n",
         encoding="utf-8",
     )
 
@@ -95,7 +95,7 @@ def test_table_resource_plan_and_apply(example_project: Path, tmp_path: Path) ->
     edited.write_text(
         "id,title,status,project_id\n"
         "t-1,Ship production CLI,doing,p-1\n"
-        "t-2,Write GETTING started docs,doing,p-2\n"
+        "t-2,Write getting started docs,doing,p-2\n"
         "t-3,Close phase zero,done,p-1\n",
         encoding="utf-8",
     )
@@ -204,7 +204,7 @@ def test_table_resource_rejects_primary_key_edits(example_project: Path, tmp_pat
     edited.write_text(
         "id,title,status,project_id\n"
         "renamed,Ship CLI skeleton,todo,p-1\n"
-        "t-2,Write GETTING started docs,doing,p-2\n"
+        "t-2,Write getting started docs,doing,p-2\n"
         "t-3,Close phase zero,done,p-1\n",
         encoding="utf-8",
     )
@@ -248,7 +248,7 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
     edited.write_text(
         "id,title,status,project_name\n"
         "t-1,Ship production CLI,doing,Core Platform\n"
-        "t-2,Write GETTING started docs,doing,Docs Refresh\n",
+        "t-2,Write getting started docs,doing,Docs Refresh\n",
         encoding="utf-8",
     )
 
@@ -267,7 +267,7 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
         "from pathlib import Path\n"
         "path = Path(__import__('sys').argv[1])\n"
         "text = path.read_text(encoding='utf-8')\n"
-        "path.write_text(text.replace('Write GETTING started docs', 'Refresh docs'), encoding='utf-8')\n"
+        "path.write_text(text.replace('Write getting started docs', 'Refresh docs'), encoding='utf-8')\n"
         "PY\n",
         encoding="utf-8",
     )
@@ -364,7 +364,7 @@ def test_edit_preserves_failed_edit_and_recovers_next_time(
         "text = path.read_text(encoding='utf-8')\n"
         "if 't-2' not in text:\n"
         "    marker.write_text('yes', encoding='utf-8')\n"
-        "    text += 't-2,Write GETTING started docs,doing,Docs Refresh\\n'\n"
+        "    text += 't-2,Write getting started docs,doing,Docs Refresh\\n'\n"
         "text = text.replace('Ship CLI skeleton', 'Ship recovered edit')\n"
         "path.write_text(text, encoding='utf-8')\n"
         "PY\n",
