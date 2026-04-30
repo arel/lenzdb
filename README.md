@@ -61,7 +61,7 @@ export LENZDB_EDITOR="code --wait"  # or "vim" or any editor
 # make changes in a *view* (or "lens") of the data
 lnz edit open_tasks
 
-# upon saving, any changes will be reflected in the source CSV file (tasks.csv)
+# upon saving and closing the editor, changes will update in the source CSV file (tasks.csv)
 cat tasks.csv
 ```
 
