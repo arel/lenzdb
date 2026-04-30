@@ -27,22 +27,42 @@ the job needs.
 
 ## Install
 
-From this repository:
+Install via [pipx](https://pipx.pypa.io/stable/):
 
 ```bash
-pip install .
+pipx install lenzdb
 ```
 
-For development:
+Or via pip:
 
 ```bash
-pip install -e ".[dev]"
+pip install lenzdb
 ```
 
-The CLI command is:
+## Getting started
+
+Example:
 
 ```bash
+# Show usage
 lnz --help
+
+cd examples/basic
+ls  # all_tasks.sql  open_tasks.sql  projects.csv  tasks.csv
+
+lnz list
+lnz view projects
+lnz view all_tasks
+lnz view all_tasks --distinct project_name
+lnz view open_tasks
+
+export LENZDB_EDITOR="code --wait"  # or "vim" or any editor
+
+# make changes in a *view* (or "lens") of the data
+lnz edit open_tasks
+
+# upon saving, any changes will be reflected in the source CSV file (tasks.csv)
+cat tasks.csv
 ```
 
 ## Configuration
