@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import json
 import shlex
 import shutil
 import subprocess
@@ -14,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from lenzdb.analysis import AnalyzedColumn, LensAnalysis, analyze_resource
-from lenzdb.engine import query_resource
+from lenzdb.engine import QueryResult, ResourceQuery, query_resource, query_resource_view
 from lenzdb.errors import MutationError
 from lenzdb.models import LensPolicy, ReferencePolicy
 from lenzdb.project import (
@@ -70,6 +72,21 @@ class EditResult:
     plan: MutationPlan
     recovery_path: Path
     recovered_from: Path | None = None
+
+
+def query_fingerprint(query: ResourceQuery) -> str:
+    payload = {
+        "columns": query.columns,
+        "distinct": query.distinct,
+        "where": query.where,
+        "order": query.order,
+        "limit": query.limit,
+        "offset": query.offset,
+        "count": query.count,
+        "sql": query.sql,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha1(encoded).hexdigest()[:12]
 
 
 def snapshot_rows(columns: list[str], rows: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -321,19 +338,65 @@ def collect_row_changes(
     return changes
 
 
-def build_mutation_plan(
-    project: Project, resource_name: str, edited_csv_path: str | Path
-) -> MutationPlan:
-    analysis = analyze_resource(project, resource_name)
+def ensure_writable_analysis(analysis: LensAnalysis, *, subject: str = "Resource") -> None:
     if not analysis.writable:
         raise MutationError(
-            "Resource is not writable: "
+            f"{subject} is not writable: "
             + "; ".join(analysis.reasons or ["missing primary key mapping"])
         )
     if analysis.primary_table is None or not analysis.primary_key_outputs:
         raise MutationError("Lens is missing primary table or primary key information")
 
-    result = query_resource(project, resource_name)
+
+def analyze_resource_view(project: Project, resource_name: str, result_columns: list[str]) -> LensAnalysis:
+    analysis = analyze_resource(project, resource_name)
+    column_map = analysis.column_map()
+    columns: list[AnalyzedColumn] = []
+    reasons = list(analysis.reasons)
+
+    for column_name in result_columns:
+        analyzed_column = column_map.get(column_name)
+        if analyzed_column is None:
+            reasons.append(f"dynamic edit output {column_name!r} does not map to the resource")
+            continue
+        columns.append(deepcopy(analyzed_column))
+
+    missing_primary_keys = [
+        output_name for output_name in analysis.primary_key_outputs if output_name not in result_columns
+    ]
+    if missing_primary_keys:
+        reasons.append(
+            "dynamic edit view must include primary key output column(s) "
+            f"{', '.join(missing_primary_keys)!r}"
+        )
+
+    primary_key_outputs = [
+        output_name for output_name in analysis.primary_key_outputs if output_name in result_columns
+    ]
+    writable = analysis.writable and not reasons and len(columns) == len(result_columns)
+    return LensAnalysis(
+        lens_name=analysis.lens_name,
+        primary_table=analysis.primary_table,
+        primary_alias=analysis.primary_alias,
+        primary_key_output=primary_key_outputs[0] if len(primary_key_outputs) == 1 else None,
+        primary_key_outputs=primary_key_outputs,
+        columns=columns,
+        writable=writable,
+        reasons=reasons,
+        warnings=[*analysis.warnings, "dynamic edit view"],
+    )
+
+
+def build_mutation_plan_from_result(
+    project: Project,
+    analysis: LensAnalysis,
+    result: QueryResult,
+    edited_csv_path: str | Path,
+    *,
+    subject: str = "Resource",
+) -> MutationPlan:
+    ensure_writable_analysis(analysis, subject=subject)
+
     current_rows = snapshot_rows(result.columns, result.rows)
     edited_rows = read_snapshot_csv(Path(edited_csv_path), result.columns)
     diff_entries = diff_snapshots(
@@ -475,6 +538,31 @@ def build_mutation_plan(
     )
 
 
+def build_mutation_plan(
+    project: Project, resource_name: str, edited_csv_path: str | Path
+) -> MutationPlan:
+    analysis = analyze_resource(project, resource_name)
+    result = query_resource(project, resource_name)
+    return build_mutation_plan_from_result(project, analysis, result, edited_csv_path)
+
+
+def build_mutation_plan_for_view(
+    project: Project,
+    resource_name: str,
+    query: ResourceQuery,
+    edited_csv_path: str | Path,
+) -> MutationPlan:
+    result = query_resource_view(project, resource_name, query)
+    analysis = analyze_resource_view(project, resource_name, result.columns)
+    return build_mutation_plan_from_result(
+        project,
+        analysis,
+        result,
+        edited_csv_path,
+        subject="Dynamic edit view",
+    )
+
+
 def apply_mutation_plan(project: Project, plan: MutationPlan) -> MutationPlan:
     if plan.has_changes:
         project.write_rows_map_atomic(plan.rows_by_table, plan.touched_tables)
@@ -495,45 +583,64 @@ def recovery_stem(resource_name: str) -> str:
     )
 
 
-def recovery_resource_name(project: Project, resource_name: str) -> str:
-    return project.resolve_resource_name(resource_name)[1]
+def recovery_resource_name(
+    project: Project, resource_name: str, query: ResourceQuery | None = None
+) -> str:
+    resolved_name = project.resolve_resource_name(resource_name)[1]
+    if query is None:
+        return resolved_name
+    return f"{resolved_name}.view.{query_fingerprint(query)}"
 
 
-def recovery_glob(project: Project, resource_name: str) -> str:
-    return f"{recovery_stem(recovery_resource_name(project, resource_name))}-*.csv"
+def recovery_glob(project: Project, resource_name: str, query: ResourceQuery | None = None) -> str:
+    return f"{recovery_stem(recovery_resource_name(project, resource_name, query))}-*.csv"
 
 
-def recovery_path(project: Project, resource_name: str) -> Path:
+def recovery_path(project: Project, resource_name: str, query: ResourceQuery | None = None) -> Path:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    stem = recovery_stem(recovery_resource_name(project, resource_name))
+    stem = recovery_stem(recovery_resource_name(project, resource_name, query))
     return recovery_dir(project) / f"{stem}-{timestamp}.csv"
 
 
-def latest_recovery_path(project: Project, resource_name: str) -> Path | None:
+def latest_recovery_path(
+    project: Project, resource_name: str, query: ResourceQuery | None = None
+) -> Path | None:
     directory = recovery_dir(project)
     if not directory.exists():
         return None
-    paths = sorted(directory.glob(recovery_glob(project, resource_name)))
+    paths = sorted(directory.glob(recovery_glob(project, resource_name, query)))
     return paths[-1] if paths else None
 
 
-def clear_recovery_files(project: Project, resource_name: str) -> None:
+def clear_recovery_files(
+    project: Project, resource_name: str, query: ResourceQuery | None = None
+) -> None:
     directory = recovery_dir(project)
     if not directory.exists():
         return
-    for path in directory.glob(recovery_glob(project, resource_name)):
+    for path in directory.glob(recovery_glob(project, resource_name, query)):
         path.unlink()
 
 
-def preserve_recovery_file(project: Project, resource_name: str, edited_path: Path) -> Path:
-    preserved_path = recovery_path(project, resource_name)
+def preserve_recovery_file(
+    project: Project,
+    resource_name: str,
+    edited_path: Path,
+    query: ResourceQuery | None = None,
+) -> Path:
+    preserved_path = recovery_path(project, resource_name, query)
     preserved_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(edited_path, preserved_path)
     return preserved_path
 
 
-def export_lens_csv(project: Project, resource_name: str, target: Path) -> None:
-    result = query_resource(project, resource_name)
+def export_lens_csv(
+    project: Project,
+    resource_name: str,
+    target: Path,
+    query: ResourceQuery | None = None,
+) -> None:
+    result = query_resource_view(project, resource_name, query) if query is not None else query_resource(project, resource_name)
     with target.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=result.columns, lineterminator="\n")
         writer.writeheader()
@@ -557,23 +664,32 @@ def edit_lens(
     editor: str,
     *,
     discard_recovery: bool = False,
+    query: ResourceQuery | None = None,
 ) -> EditResult:
+    if query is not None:
+        result = query_resource_view(project, resource_name, query)
+        analysis = analyze_resource_view(project, resource_name, result.columns)
+        ensure_writable_analysis(analysis, subject="Dynamic edit view")
+
     with tempfile.TemporaryDirectory(prefix="lenzdb-") as temp_dir:
         safe_name = resource_name.replace("/", "_").replace("\\", "_")
         temp_path = Path(temp_dir) / f"{safe_name}.csv"
-        recovered_from = None if discard_recovery else latest_recovery_path(project, resource_name)
+        recovered_from = None if discard_recovery else latest_recovery_path(project, resource_name, query)
         if recovered_from is not None:
             shutil.copy2(recovered_from, temp_path)
         else:
-            export_lens_csv(project, resource_name, temp_path)
+            export_lens_csv(project, resource_name, temp_path, query)
         try:
             run_editor(editor, temp_path)
         except MutationError as exc:
-            preserved_path = preserve_recovery_file(project, resource_name, temp_path)
+            preserved_path = preserve_recovery_file(project, resource_name, temp_path, query)
             raise MutationError(f"{exc}\nEdited file preserved at: {preserved_path}") from exc
-        preserved_path = preserve_recovery_file(project, resource_name, temp_path)
+        preserved_path = preserve_recovery_file(project, resource_name, temp_path, query)
         try:
-            plan = build_mutation_plan(project, resource_name, temp_path)
+            if query is None:
+                plan = build_mutation_plan(project, resource_name, temp_path)
+            else:
+                plan = build_mutation_plan_for_view(project, resource_name, query, temp_path)
         except MutationError as exc:
             raise MutationError(f"{exc}\nEdited file preserved at: {preserved_path}") from exc
         return EditResult(plan=plan, recovery_path=preserved_path, recovered_from=recovered_from)

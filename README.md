@@ -79,6 +79,16 @@ Most commands locate a project in this order:
 2. `$LENZDB_EDITOR`
 3. `$EDITOR`
 
+Interactive `lnz view --format table` chooses a pager in this order:
+
+1. `$LENZDB_PAGER`
+2. `$PAGER`
+3. `less`, when installed
+
+Table output width uses `$LENZDB_COLUMNS`, then `$COLUMNS`, then the terminal
+width. `LENZDB_PAGE_SIZE` overrides `view.page_size` for `--page`; set it to
+`-1` to require an explicit `--page-size`.
+
 Example:
 
 ```bash
@@ -162,6 +172,7 @@ lnz view tasks --project examples/basic --columns id,title,status
 lnz view tasks --project examples/basic --filter "status = 'todo'"
 lnz view tasks --project examples/basic --order status,-title --limit 20
 lnz view tasks --project examples/basic --page 2
+lnz view tasks --project examples/basic --describe
 lnz view tasks --project examples/basic --count
 lnz view open_tasks --project examples/basic --sql "select title from resource where status = 'doing'"
 lnz list --project examples/basic
@@ -179,7 +190,8 @@ comma-separated set of output columns, `--filter` accepts a SQL `WHERE` fragment
 and `--order` accepts comma-separated columns with a `-` prefix for descending
 sorts. `--page` uses the project page size. `--limit` and `--offset` control
 the returned row range. `--sql` runs a SQL query where the selected table or
-lens is available as `resource`.
+lens is available as `resource`. `--describe` returns the final output shape
+instead of rows.
 
 Export a lens, edit it, and preview the writeback plan:
 
@@ -209,10 +221,17 @@ Or let LenzDB open the editor for you:
 
 ```bash
 LENZDB_EDITOR=vim lnz edit open_tasks --project examples/basic
+LENZDB_EDITOR=vim lnz edit open_tasks --project examples/basic --columns id,title
+LENZDB_EDITOR=vim lnz edit tasks --project examples/basic --filter "status = 'doing'"
 ```
 
 `apply` and `edit` do not ask a final `y/N` question. Keep project files under
 version control so data changes can be reviewed and reverted normally.
+
+`lnz edit` accepts the identity-preserving view flags `--columns`, `--filter`,
+`--order`, `--limit`, `--offset`, `--page`, and `--page-size`. LenzDB treats
+those as a temporary edit view and rejects it before opening the editor if it
+cannot map edited rows back to source CSV rows.
 
 If `edit` fails after the editor opens, LenzDB preserves the edited CSV in
 `.lenzdb/recovery/`. The next `lnz edit RESOURCE` resumes the newest recovery

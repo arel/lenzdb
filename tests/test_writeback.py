@@ -292,6 +292,182 @@ def test_apply_command_and_edit_command(runner, example_project: Path, tmp_path:
     assert "Refresh docs" in tasks_csv
 
 
+def test_edit_columns_dynamic_view(runner, example_project: Path, tmp_path: Path) -> None:
+    editor_script = tmp_path / "edit_columns.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "assert 'id,title\\n' in text\n"
+        "assert 'status' not in text\n"
+        "path.write_text(text.replace('Ship CLI skeleton', 'Ship focused edit'), encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+            "--columns",
+            "id,title",
+        ],
+    )
+
+    assert result.exit_code == 0
+    tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
+    assert "t-1,Ship focused edit,todo,p-1" in tasks_csv
+
+
+def test_edit_dynamic_view_requires_primary_key_before_editor(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    marker = tmp_path / "editor_ran"
+    editor_script = tmp_path / "edit_without_pk.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        f"touch {marker}\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+            "--columns",
+            "title",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "dynamic edit view must include primary key output column" in result.stderr
+    assert not marker.exists()
+
+
+def test_edit_filter_dynamic_view(runner, example_project: Path, tmp_path: Path) -> None:
+    editor_script = tmp_path / "edit_filter.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "assert 't-2,Write getting started docs' in text\n"
+        "assert 't-1,Ship CLI skeleton' not in text\n"
+        "path.write_text(text.replace('Write getting started docs', 'Write filtered docs'), encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+            "--filter",
+            "status = 'doing'",
+        ],
+    )
+
+    assert result.exit_code == 0
+    tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
+    assert "t-2,Write filtered docs,doing,p-2" in tasks_csv
+
+
+def test_edit_page_dynamic_view(runner, example_project: Path, tmp_path: Path) -> None:
+    editor_script = tmp_path / "edit_page.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "assert 't-2,Write getting started docs' in text\n"
+        "assert 't-1,Ship CLI skeleton' not in text\n"
+        "path.write_text(text.replace('Write getting started docs', 'Write paged docs'), encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+            "--order",
+            "id",
+            "--page",
+            "2",
+            "--page-size",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
+    assert "t-2,Write paged docs,doing,p-2" in tasks_csv
+
+
+def test_edit_dynamic_recovery_files_are_shape_specific(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    editor_script = tmp_path / "fail_dynamic_edit.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "path.write_text('id,title\\n"
+        "t-1,Ship CLI skeleton\\n', encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+            "--columns",
+            "id,title",
+        ],
+    )
+
+    assert result.exit_code == 1
+    recovery_dir = example_project / ".lenzdb" / "recovery"
+    assert list(recovery_dir.glob("main.open_tasks.view.*-*.csv"))
+    assert not list(recovery_dir.glob("main.open_tasks-*.csv"))
+
+
 def test_edit_prefers_lenzdb_editor_over_editor(
     runner, example_project: Path, tmp_path: Path
 ) -> None:
