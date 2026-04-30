@@ -85,20 +85,26 @@ def render_html(columns: list[str], rows: list[dict[str, Any]]) -> str:
     return "\n".join(parts) + "\n"
 
 
-def render_table(columns: list[str], rows: list[dict[str, Any]]) -> str:
+def render_table(columns: list[str], rows: list[dict[str, Any]], *, width: int | None = None) -> str:
     normalized = normalize_rows(columns, rows)
     table = Table(show_header=True, header_style="bold")
     for column in columns:
         table.add_column(column)
     for row in normalized:
         table.add_row(*(row.get(column, "") for column in columns))
-    console = Console(color_system=None, force_terminal=False, width=120)
+    console = Console(color_system=None, force_terminal=False, width=width or 120)
     with console.capture() as capture:
         console.print(table)
     return capture.get()
 
 
-def render_view(columns: list[str], rows: list[dict[str, Any]], output_format: str) -> str:
+def render_view(
+    columns: list[str],
+    rows: list[dict[str, Any]],
+    output_format: str,
+    *,
+    width: int | None = None,
+) -> str:
     if output_format == "csv":
         return render_csv(columns, rows)
     if output_format == "tsv":
@@ -113,7 +119,7 @@ def render_view(columns: list[str], rows: list[dict[str, Any]], output_format: s
         return render_markdown(columns, rows)
     if output_format == "html":
         return render_html(columns, rows)
-    return render_table(columns, rows)
+    return render_table(columns, rows, width=width)
 
 
 def render_analysis(analysis: LensAnalysis) -> str:

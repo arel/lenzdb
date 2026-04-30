@@ -5,6 +5,9 @@ from __future__ import annotations
 import csv
 import inspect
 import os
+import shlex
+import shutil
+import subprocess
 import sys
 from functools import wraps
 from pathlib import Path
@@ -14,7 +17,7 @@ import typer
 import yaml
 
 from lenzdb.analysis import analyze_lens, analyze_resource
-from lenzdb.engine import ResourceQuery, query_lens, query_resource, query_resource_view
+from lenzdb.engine import ResourceQuery, describe_resource_view, query_lens, query_resource, query_resource_view
 from lenzdb.errors import LenzError
 from lenzdb.planner import (
     apply_mutation_plan,
@@ -40,6 +43,11 @@ app = typer.Typer(help="LenzDB CLI")
 PROJECT_ROOT_ENV_VAR = "LENZDB_PROJECT_ROOT"
 EDITOR_ENV_VAR = "LENZDB_EDITOR"
 FALLBACK_EDITOR_ENV_VAR = "EDITOR"
+PAGER_ENV_VAR = "LENZDB_PAGER"
+FALLBACK_PAGER_ENV_VAR = "PAGER"
+COLUMNS_ENV_VAR = "LENZDB_COLUMNS"
+FALLBACK_COLUMNS_ENV_VAR = "COLUMNS"
+PAGE_SIZE_ENV_VAR = "LENZDB_PAGE_SIZE"
 OUTPUT_FORMAT_HELP = "Output format: table, markdown, csv, tsv, json, ndjson, yaml, html."
 
 ProjectOption = Annotated[
@@ -289,6 +297,162 @@ def validate_non_negative(value: int | None, *, option_name: str) -> None:
 def validate_positive(value: int | None, *, option_name: str) -> None:
     if value is not None and value < 1:
         raise LenzError(f"{option_name} must be one or greater")
+
+
+def parse_positive_env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise LenzError(f"${name} must be a positive integer") from exc
+    if parsed < 1:
+        raise LenzError(f"${name} must be a positive integer")
+    return parsed
+
+
+def parse_page_size_env() -> int | None:
+    value = os.environ.get(PAGE_SIZE_ENV_VAR)
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise LenzError(f"${PAGE_SIZE_ENV_VAR} must be a positive integer or -1") from exc
+    if parsed != -1 and parsed < 1:
+        raise LenzError(f"${PAGE_SIZE_ENV_VAR} must be a positive integer or -1")
+    return parsed
+
+
+def resolve_page_size(project: Project, explicit_page_size: int | None) -> int | None:
+    if explicit_page_size is not None:
+        return explicit_page_size
+    env_page_size = parse_page_size_env()
+    if env_page_size is not None:
+        return None if env_page_size == -1 else env_page_size
+    return project.view_page_size
+
+
+def output_width() -> int:
+    for env_var in [COLUMNS_ENV_VAR, FALLBACK_COLUMNS_ENV_VAR]:
+        value = parse_positive_env_int(env_var)
+        if value is not None:
+            return value
+    return shutil.get_terminal_size(fallback=(120, 24)).columns
+
+
+def selected_pager() -> str | None:
+    return os.environ.get(PAGER_ENV_VAR) or os.environ.get(FALLBACK_PAGER_ENV_VAR)
+
+
+def should_page_view_output(output_format: str) -> bool:
+    return output_format == "table" and sys.stdout.isatty() and selected_pager() is not None
+
+
+def page_output(text: str) -> None:
+    pager = selected_pager()
+    if pager is None:
+        typer.echo(text, nl=False)
+        return
+    command = shlex.split(pager)
+    if not command:
+        raise LenzError("Pager command must not be empty")
+    try:
+        subprocess.run(command, input=text, text=True, check=False)
+    except FileNotFoundError as exc:
+        raise LenzError(f"Pager command not found: {pager!r}") from exc
+
+
+def write_view_output(text: str, output_format: str) -> None:
+    if should_page_view_output(output_format):
+        page_output(text)
+        return
+    typer.echo(text, nl=False)
+
+
+def build_view_query(
+    project: Project,
+    *,
+    columns: str | None = None,
+    distinct: str | None = None,
+    where: str | None = None,
+    order: str | None = None,
+    count: bool = False,
+    limit: int | None = None,
+    offset: int | None = None,
+    page: int | None = None,
+    page_size: int | None = None,
+    sql: str | None = None,
+) -> ResourceQuery:
+    selected_columns = parse_comma_list(columns, option_name="--columns")
+    distinct_columns = parse_comma_list(distinct, option_name="--distinct")
+    order_columns = parse_comma_list(order, option_name="--order")
+    if sql is not None and not sql.strip():
+        raise LenzError("--sql must not be empty")
+    validate_positive(limit, option_name="--limit")
+    validate_non_negative(offset, option_name="--offset")
+    validate_positive(page, option_name="--page")
+    validate_positive(page_size, option_name="--page-size")
+
+    convenience_options = [
+        option is not None
+        for option in [
+            selected_columns,
+            distinct_columns,
+            where,
+            order_columns,
+            limit,
+            offset,
+            page,
+            page_size,
+        ]
+    ]
+    if sql is not None and (count or any(convenience_options)):
+        raise LenzError("--sql cannot be combined with view convenience options")
+    if count and any(
+        option is not None
+        for option in [
+            selected_columns,
+            distinct_columns,
+            order_columns,
+            limit,
+            offset,
+            page,
+            page_size,
+        ]
+    ):
+        raise LenzError("--count may only be combined with --filter")
+    if distinct_columns is not None and selected_columns is not None:
+        raise LenzError("--distinct cannot be combined with --columns")
+    if page is not None and (limit is not None or offset is not None):
+        raise LenzError("--page cannot be combined with --limit or --offset")
+    if page_size is not None and page is None:
+        raise LenzError("--page-size requires --page")
+
+    effective_limit = limit
+    effective_offset = offset
+    if page is not None:
+        effective_page_size = resolve_page_size(project, page_size)
+        if effective_page_size is None:
+            raise LenzError(f"--page requires --page-size when ${PAGE_SIZE_ENV_VAR}=-1")
+        effective_limit = effective_page_size
+        effective_offset = (page - 1) * effective_page_size
+
+    return ResourceQuery(
+        columns=selected_columns,
+        distinct=distinct_columns,
+        where=where,
+        order=order_columns,
+        limit=effective_limit,
+        offset=effective_offset,
+        count=count,
+        sql=sql,
+    )
+
+
+def is_identity_query(query: ResourceQuery) -> bool:
+    return query == ResourceQuery()
 
 
 def read_csv_header(path: Path) -> list[str]:
@@ -578,73 +742,38 @@ def view(
             help="SQL query over the selected resource, exposed as table name 'resource'.",
         ),
     ] = None,
+    describe: Annotated[
+        bool,
+        typer.Option(
+            "--describe",
+            help="Describe the final query shape instead of returning rows.",
+        ),
+    ] = False,
     project: ProjectOption = None,
 ) -> None:
     project_instance = load_project(project, validate_configuration=False)
-    selected_columns = parse_comma_list(columns, option_name="--columns")
-    distinct_columns = parse_comma_list(distinct, option_name="--distinct")
-    order_columns = parse_comma_list(order, option_name="--order")
-    if sql is not None and not sql.strip():
-        raise LenzError("--sql must not be empty")
-    validate_positive(limit, option_name="--limit")
-    validate_non_negative(offset, option_name="--offset")
-    validate_positive(page, option_name="--page")
-    validate_positive(page_size, option_name="--page-size")
-
-    convenience_options = [
-        option is not None
-        for option in [
-            selected_columns,
-            distinct_columns,
-            where,
-            order_columns,
-            limit,
-            offset,
-            page,
-            page_size,
-        ]
-    ]
-    if sql is not None and (count or any(convenience_options)):
-        raise LenzError("--sql cannot be combined with view convenience options")
-    if count and any(
-        option is not None
-        for option in [
-            selected_columns,
-            distinct_columns,
-            order_columns,
-            limit,
-            offset,
-            page,
-            page_size,
-        ]
-    ):
-        raise LenzError("--count may only be combined with --filter")
-    if distinct_columns is not None and selected_columns is not None:
-        raise LenzError("--distinct cannot be combined with --columns")
-    if page is not None and (limit is not None or offset is not None):
-        raise LenzError("--page cannot be combined with --limit or --offset")
-    if page_size is not None and page is None:
-        raise LenzError("--page-size requires --page")
-
-    effective_limit = limit
-    effective_offset = offset
-    if page is not None:
-        effective_page_size = page_size or project_instance.view_page_size
-        effective_limit = effective_page_size
-        effective_offset = (page - 1) * effective_page_size
-
-    query = ResourceQuery(
-        columns=selected_columns,
-        distinct=distinct_columns,
+    query = build_view_query(
+        project_instance,
+        columns=columns,
+        distinct=distinct,
         where=where,
-        order=order_columns,
-        limit=effective_limit,
-        offset=effective_offset,
+        order=order,
         count=count,
+        limit=limit,
+        offset=offset,
+        page=page,
+        page_size=page_size,
         sql=sql,
     )
-    result = query_resource_view(project_instance, name, query)
-    typer.echo(render_view(result.columns, result.rows, output_format), nl=False)
+    result = (
+        describe_resource_view(project_instance, name, query)
+        if describe
+        else query_resource_view(project_instance, name, query)
+    )
+    write_view_output(
+        render_view(result.columns, result.rows, output_format, width=output_width()),
+        output_format,
+    )
 
 
 @app.command()
@@ -695,7 +824,7 @@ def list_resources(
     if check:
         columns.append("check")
     rows = build_list_rows(project_instance, check)
-    typer.echo(render_view(columns, rows, output_format), nl=False)
+    typer.echo(render_view(columns, rows, output_format, width=output_width()), nl=False)
 
 
 @app.command()
@@ -789,9 +918,57 @@ def edit(
             help="Ignore any preserved failed edit and start from current data.",
         ),
     ] = False,
+    columns: Annotated[
+        str | None,
+        typer.Option(
+            "--columns",
+            help="Comma-separated columns to edit, e.g. id,title,status.",
+        ),
+    ] = None,
+    where: Annotated[
+        str | None,
+        typer.Option(
+            "--filter",
+            help="SQL WHERE fragment evaluated against the resource.",
+        ),
+    ] = None,
+    order: Annotated[
+        str | None,
+        typer.Option(
+            "--order",
+            help="Comma-separated order columns. Prefix with '-' for descending.",
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Maximum number of rows to edit."),
+    ] = None,
+    offset: Annotated[
+        int | None,
+        typer.Option("--offset", help="Number of rows to skip."),
+    ] = None,
+    page: Annotated[
+        int | None,
+        typer.Option("--page", help="One-based page number using the configured page size."),
+    ] = None,
+    page_size: Annotated[
+        int | None,
+        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+    ] = None,
     project: ProjectOption = None,
 ) -> None:
     project_instance = load_project(project, validate_configuration=False)
+    query = build_view_query(
+        project_instance,
+        columns=columns,
+        where=where,
+        order=order,
+        limit=limit,
+        offset=offset,
+        page=page,
+        page_size=page_size,
+    )
+    edit_query = None if is_identity_query(query) else query
     editor_command = (
         editor
         or os.environ.get(EDITOR_ENV_VAR)
@@ -808,20 +985,21 @@ def edit(
         resource_name,
         editor_command,
         discard_recovery=discard_recovery,
+        query=edit_query,
     )
     if edit_result.recovered_from is not None:
         typer.echo(f"Recovered previous failed edit: {edit_result.recovered_from}")
     mutation_plan = edit_result.plan
     typer.echo(render_plan(mutation_plan), nl=False)
     if not mutation_plan.has_changes:
-        clear_recovery_files(project_instance, resource_name)
+        clear_recovery_files(project_instance, resource_name, query=edit_query)
         typer.echo("No changes to apply.")
         return
     try:
         apply_mutation_plan(project_instance, mutation_plan)
     except LenzError as exc:
         raise LenzError(f"{exc}\nEdited file preserved at: {edit_result.recovery_path}") from exc
-    clear_recovery_files(project_instance, resource_name)
+    clear_recovery_files(project_instance, resource_name, query=edit_query)
     typer.echo("Changes applied.")
 
 

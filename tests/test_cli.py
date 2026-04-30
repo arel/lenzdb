@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from lenzdb.cli import app, complete_project_resource
+from lenzdb.cli import app, complete_project_resource, output_width, selected_pager
 
 
 def test_view_markdown(runner, example_project: Path) -> None:
@@ -21,6 +21,76 @@ def test_view_table_markdown(runner, example_project: Path) -> None:
     assert result.exit_code == 0
     assert "| id | title | status | project_id |" in result.stdout
     assert "p-1" in result.stdout
+
+
+def test_view_describe_table_shape(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["view", "tasks", "--project", str(example_project), "--describe", "--format", "markdown"],
+    )
+
+    assert result.exit_code == 0
+    assert "| column | type | nullable |" in result.stdout
+    assert "| id | VARCHAR | yes |" in result.stdout
+    assert "| status | VARCHAR | yes |" in result.stdout
+
+
+def test_view_describe_lens_selected_columns(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--describe",
+            "--format",
+            "markdown",
+            "--columns",
+            "id,project_name",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "| id | VARCHAR | yes |" in result.stdout
+    assert "| project_name | VARCHAR | yes |" in result.stdout
+    assert "title" not in result.stdout
+
+
+def test_view_describe_count_and_sql_shapes(runner, example_project: Path) -> None:
+    count_result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--describe",
+            "--format",
+            "markdown",
+            "--count",
+        ],
+    )
+    sql_result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--describe",
+            "--format",
+            "markdown",
+            "--sql",
+            "select title from resource;",
+        ],
+    )
+
+    assert count_result.exit_code == 0
+    assert "| count | BIGINT | yes |" in count_result.stdout
+    assert sql_result.exit_code == 0
+    assert "| title | VARCHAR | yes |" in sql_result.stdout
+    assert "project_id" not in sql_result.stdout
 
 
 def test_view_ignores_unrelated_untracked_csv(runner, example_project: Path) -> None:
@@ -122,6 +192,35 @@ def test_list_help_lists_output_formats(runner) -> None:
         assert output_format in result.stdout
 
 
+def test_output_width_env_precedence(monkeypatch) -> None:
+    monkeypatch.setenv("COLUMNS", "80")
+    monkeypatch.setenv("LENZDB_COLUMNS", "42")
+
+    assert output_width() == 42
+
+    monkeypatch.delenv("LENZDB_COLUMNS")
+
+    assert output_width() == 80
+
+
+def test_selected_pager_env_precedence(monkeypatch) -> None:
+    monkeypatch.setenv("PAGER", "plain-pager")
+    monkeypatch.setenv("LENZDB_PAGER", "lenz-pager")
+
+    assert selected_pager() == "lenz-pager"
+
+    monkeypatch.delenv("LENZDB_PAGER")
+
+    assert selected_pager() == "plain-pager"
+
+
+def test_selected_pager_is_unset_without_env(monkeypatch) -> None:
+    monkeypatch.delenv("LENZDB_PAGER", raising=False)
+    monkeypatch.delenv("PAGER", raising=False)
+
+    assert selected_pager() is None
+
+
 def test_view_paginates_with_project_page_size(runner, example_project: Path) -> None:
     (example_project / ".lenzdb" / "project.yaml").write_text(
         "view:\n"
@@ -148,6 +247,73 @@ def test_view_paginates_with_project_page_size(runner, example_project: Path) ->
     assert result.exit_code == 0
     assert "Write getting started docs" in result.stdout
     assert "Ship CLI skeleton" not in result.stdout
+
+
+def test_view_page_size_env_overrides_project_page_size(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--order",
+            "id",
+            "--page",
+            "2",
+        ],
+        env={"LENZDB_PAGE_SIZE": "1"},
+    )
+
+    assert result.exit_code == 0
+    assert "Write getting started docs" in result.stdout
+    assert "Ship CLI skeleton" not in result.stdout
+
+
+def test_view_page_size_env_minus_one_requires_explicit_size(
+    runner, example_project: Path
+) -> None:
+    missing_size = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--order",
+            "id",
+            "--page",
+            "2",
+        ],
+        env={"LENZDB_PAGE_SIZE": "-1"},
+    )
+    explicit_size = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "markdown",
+            "--order",
+            "id",
+            "--page",
+            "2",
+            "--page-size",
+            "1",
+        ],
+        env={"LENZDB_PAGE_SIZE": "-1"},
+    )
+
+    assert missing_size.exit_code == 1
+    assert "--page requires --page-size when $LENZDB_PAGE_SIZE=-1" in missing_size.stderr
+    assert explicit_size.exit_code == 0
+    assert "Write getting started docs" in explicit_size.stdout
 
 
 def test_view_count_allows_filter(runner, example_project: Path) -> None:

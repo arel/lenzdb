@@ -213,7 +213,7 @@ def build_resource_view_sql(
     query: ResourceQuery,
 ) -> str:
     if query.sql:
-        return f"WITH resource AS ({base_sql}) {query.sql}"
+        return f"WITH resource AS ({base_sql}) {query.sql.strip().removesuffix(';')}"
 
     if query.count:
         select_sql = "SELECT count(*) AS count"
@@ -248,19 +248,49 @@ def build_resource_view_sql(
     return sql
 
 
-def query_resource_view(project: Project, resource_name: str, query: ResourceQuery) -> QueryResult:
+def build_resource_view_query_sql(
+    project: Project,
+    resource_name: str,
+    query: ResourceQuery,
+    connection: duckdb.DuckDBPyConnection,
+) -> str:
     base_sql = resource_sql(project, resource_name)
+    base_result = fetch_query_result(
+        connection,
+        f"WITH resource AS ({base_sql}) SELECT * FROM resource LIMIT 0",
+        error_prefix="Resource query failed",
+    )
+    return build_resource_view_sql(base_sql, base_result.columns, query)
+
+
+def query_resource_view(project: Project, resource_name: str, query: ResourceQuery) -> QueryResult:
     connection = build_connection(project, load_resource_rows(project, resource_name))
     try:
-        base_result = fetch_query_result(
-            connection,
-            f"WITH resource AS ({base_sql}) SELECT * FROM resource LIMIT 0",
-            error_prefix="Resource query failed",
-        )
-        sql = build_resource_view_sql(base_sql, base_result.columns, query)
+        sql = build_resource_view_query_sql(project, resource_name, query, connection)
         return fetch_query_result(connection, sql)
     finally:
         connection.close()
+
+
+def describe_resource_view(project: Project, resource_name: str, query: ResourceQuery) -> QueryResult:
+    connection = build_connection(project, load_resource_rows(project, resource_name))
+    try:
+        sql = build_resource_view_query_sql(project, resource_name, query, connection)
+        result = fetch_query_result(connection, f"DESCRIBE ({sql})")
+    finally:
+        connection.close()
+
+    rows = []
+    for row in result.rows:
+        nullable = row.get("null")
+        rows.append(
+            {
+                "column": row.get("column_name"),
+                "type": row.get("column_type"),
+                "nullable": "yes" if nullable == "YES" else "no" if nullable == "NO" else nullable,
+            }
+        )
+    return QueryResult(columns=["column", "type", "nullable"], rows=rows)
 
 
 def query_table(
