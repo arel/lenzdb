@@ -214,6 +214,13 @@ def test_selected_pager_env_precedence(monkeypatch) -> None:
     assert selected_pager() == "plain-pager"
 
 
+def test_selected_pager_is_unset_without_env(monkeypatch) -> None:
+    monkeypatch.delenv("LENZDB_PAGER", raising=False)
+    monkeypatch.delenv("PAGER", raising=False)
+
+    assert selected_pager() is None
+
+
 def test_view_paginates_with_project_page_size(runner, example_project: Path) -> None:
     (example_project / ".lenzdb" / "project.yaml").write_text(
         "view:\n"

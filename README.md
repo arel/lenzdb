@@ -83,7 +83,6 @@ Interactive `lnz view --format table` chooses a pager in this order:
 
 1. `$LENZDB_PAGER`
 2. `$PAGER`
-3. `less`, when installed
 
 Table output width uses `$LENZDB_COLUMNS`, then `$COLUMNS`, then the terminal
 width. `LENZDB_PAGE_SIZE` overrides `view.page_size` for `--page`; set it to

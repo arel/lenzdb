@@ -343,10 +343,7 @@ def output_width() -> int:
 
 
 def selected_pager() -> str | None:
-    configured = os.environ.get(PAGER_ENV_VAR) or os.environ.get(FALLBACK_PAGER_ENV_VAR)
-    if configured:
-        return configured
-    return "less" if shutil.which("less") else None
+    return os.environ.get(PAGER_ENV_VAR) or os.environ.get(FALLBACK_PAGER_ENV_VAR)
 
 
 def should_page_view_output(output_format: str) -> bool:
