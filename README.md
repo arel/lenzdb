@@ -91,7 +91,7 @@ width. `LENZDB_PAGE_SIZE` overrides `view.page_size` for `--page`; set it to
 Example:
 
 ```bash
-export LENZDB_PROJECT_ROOT=examples/basic
+cd examples/basic
 export LENZDB_EDITOR=vim
 lnz list
 lnz edit open_tasks
@@ -164,19 +164,20 @@ Unqualified names work only when they are unambiguous. If both `main.tasks` and
 Run the bundled example:
 
 ```bash
-lnz check --project examples/basic
-lnz view open_tasks --project examples/basic
-lnz view tasks --project examples/basic
-lnz view tasks --project examples/basic --columns id,title,status
-lnz view tasks --project examples/basic --filter "status = 'todo'"
-lnz view tasks --project examples/basic --order status,-title --limit 20
-lnz view tasks --project examples/basic --page 2
-lnz view tasks --project examples/basic --describe
-lnz view tasks --project examples/basic --count
-lnz view open_tasks --project examples/basic --sql "select title from resource where status = 'doing'"
-lnz list --project examples/basic
-lnz list --project examples/basic --check
-lnz explain open_tasks --project examples/basic
+cd examples/basic
+lnz check
+lnz view open_tasks
+lnz view tasks
+lnz view tasks --columns id,title,status
+lnz view tasks --filter "status = 'todo'"
+lnz view tasks --order status,-title --limit 20
+lnz view tasks --page 2
+lnz describe tasks
+lnz view tasks --count
+lnz view open_tasks --sql "select title from resource where status = 'doing'"
+lnz list
+lnz list --check
+lnz explain open_tasks
 ```
 
 `view`, `explain`, `diff`, `plan`, `apply`, and `edit` accept either a lens or
@@ -195,33 +196,38 @@ instead of rows.
 Export a lens, edit it, and preview the writeback plan:
 
 ```bash
-lnz view open_tasks --project examples/basic --format csv > /tmp/open_tasks.csv
+cd examples/basic
+lnz view open_tasks --format csv > /tmp/open_tasks.csv
 $EDITOR /tmp/open_tasks.csv
-lnz diff open_tasks /tmp/open_tasks.csv --project examples/basic
-lnz plan open_tasks /tmp/open_tasks.csv --project examples/basic
+lnz diff open_tasks /tmp/open_tasks.csv
+lnz plan open_tasks /tmp/open_tasks.csv
 ```
 
 The same flow works for raw CSV tables:
 
 ```bash
-lnz view tasks --project examples/basic --format csv > /tmp/tasks.csv
+cd examples/basic
+lnz view tasks --format csv > /tmp/tasks.csv
 $EDITOR /tmp/tasks.csv
-lnz plan tasks /tmp/tasks.csv --project examples/basic
-lnz apply tasks /tmp/tasks.csv --project examples/basic
+lnz plan tasks /tmp/tasks.csv
+lnz apply tasks /tmp/tasks.csv
 ```
 
 Apply the changes:
 
 ```bash
-lnz apply open_tasks /tmp/open_tasks.csv --project examples/basic
+cd examples/basic
+lnz apply open_tasks /tmp/open_tasks.csv
 ```
 
 Or let LenzDB open the editor for you:
 
 ```bash
-LENZDB_EDITOR=vim lnz edit open_tasks --project examples/basic
-LENZDB_EDITOR=vim lnz edit open_tasks --project examples/basic --columns id,title
-LENZDB_EDITOR=vim lnz edit tasks --project examples/basic --filter "status = 'doing'"
+cd examples/basic
+export LENZDB_EDITOR=vim
+lnz edit open_tasks
+lnz edit open_tasks --columns id,title
+lnz edit tasks --filter "status = 'doing'"
 ```
 
 `apply` and `edit` do not ask a final `y/N` question. Keep project files under

@@ -11,7 +11,7 @@ from sqlglot import exp, parse_one
 from sqlglot.errors import ParseError
 
 from lenzdb.errors import ProjectError
-from lenzdb.project import Project, split_resource_key
+from lenzdb.project import Project, normalize_primary_key, split_resource_key
 
 
 def quote_identifier(identifier: str) -> str:
@@ -280,17 +280,25 @@ def describe_resource_view(project: Project, resource_name: str, query: Resource
     finally:
         connection.close()
 
+    resource_kind, resolved_name = project.resolve_resource_name(resource_name)
+    primary_keys: set[str] = set()
+    if resource_kind == "table":
+        primary_keys = set(project.primary_key_columns(resolved_name))
+    elif resource_kind == "lens" and resolved_name in project.policies:
+        primary_keys = set(normalize_primary_key(project.policies[resolved_name].primary_key))
+
     rows = []
     for row in result.rows:
-        nullable = row.get("null")
+        column_name = row.get("column_name")
+        primary_key = column_name in primary_keys
         rows.append(
             {
-                "column": row.get("column_name"),
+                "column": column_name,
                 "type": row.get("column_type"),
-                "nullable": "yes" if nullable == "YES" else "no" if nullable == "NO" else nullable,
+                "primary_key": "yes" if primary_key else "no",
             }
         )
-    return QueryResult(columns=["column", "type", "nullable"], rows=rows)
+    return QueryResult(columns=["column", "type", "primary_key"], rows=rows)
 
 
 def query_table(

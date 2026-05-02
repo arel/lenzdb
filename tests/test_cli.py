@@ -5,6 +5,13 @@ from pathlib import Path
 from lenzdb.cli import app, complete_project_resource, output_width, selected_pager
 
 
+def test_version_flag(runner) -> None:
+    result = runner.invoke(app, ["--version"])
+
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "lnz 0.1.3"
+
+
 def test_view_markdown(runner, example_project: Path) -> None:
     result = runner.invoke(
         app, ["view", "open_tasks", "--project", str(example_project), "--format", "markdown"]
@@ -23,27 +30,26 @@ def test_view_table_markdown(runner, example_project: Path) -> None:
     assert "p-1" in result.stdout
 
 
-def test_view_describe_table_shape(runner, example_project: Path) -> None:
+def test_describe_table_shape(runner, example_project: Path) -> None:
     result = runner.invoke(
         app,
-        ["view", "tasks", "--project", str(example_project), "--describe", "--format", "markdown"],
+        ["describe", "tasks", "--project", str(example_project), "--format", "markdown"],
     )
 
     assert result.exit_code == 0
-    assert "| column | type | nullable |" in result.stdout
+    assert "| column | type | primary_key |" in result.stdout
     assert "| id | VARCHAR | yes |" in result.stdout
-    assert "| status | VARCHAR | yes |" in result.stdout
+    assert "| status | VARCHAR | no |" in result.stdout
 
 
-def test_view_describe_lens_selected_columns(runner, example_project: Path) -> None:
+def test_describe_lens_selected_columns(runner, example_project: Path) -> None:
     result = runner.invoke(
         app,
         [
-            "view",
+            "describe",
             "open_tasks",
             "--project",
             str(example_project),
-            "--describe",
             "--format",
             "markdown",
             "--columns",
@@ -53,19 +59,18 @@ def test_view_describe_lens_selected_columns(runner, example_project: Path) -> N
 
     assert result.exit_code == 0
     assert "| id | VARCHAR | yes |" in result.stdout
-    assert "| project_name | VARCHAR | yes |" in result.stdout
+    assert "| project_name | VARCHAR | no |" in result.stdout
     assert "title" not in result.stdout
 
 
-def test_view_describe_count_and_sql_shapes(runner, example_project: Path) -> None:
+def test_describe_count_and_sql_shapes(runner, example_project: Path) -> None:
     count_result = runner.invoke(
         app,
         [
-            "view",
+            "describe",
             "tasks",
             "--project",
             str(example_project),
-            "--describe",
             "--format",
             "markdown",
             "--count",
@@ -74,11 +79,10 @@ def test_view_describe_count_and_sql_shapes(runner, example_project: Path) -> No
     sql_result = runner.invoke(
         app,
         [
-            "view",
+            "describe",
             "tasks",
             "--project",
             str(example_project),
-            "--describe",
             "--format",
             "markdown",
             "--sql",
@@ -87,10 +91,17 @@ def test_view_describe_count_and_sql_shapes(runner, example_project: Path) -> No
     )
 
     assert count_result.exit_code == 0
-    assert "| count | BIGINT | yes |" in count_result.stdout
+    assert "| count | BIGINT | no |" in count_result.stdout
     assert sql_result.exit_code == 0
-    assert "| title | VARCHAR | yes |" in sql_result.stdout
+    assert "| title | VARCHAR | no |" in sql_result.stdout
     assert "project_id" not in sql_result.stdout
+
+
+def test_view_rejects_describe_flag(runner, example_project: Path) -> None:
+    result = runner.invoke(app, ["view", "tasks", "--project", str(example_project), "--describe"])
+
+    assert result.exit_code != 0
+    assert "No such option: --describe" in result.stderr
 
 
 def test_view_ignores_unrelated_untracked_csv(runner, example_project: Path) -> None:

@@ -16,6 +16,7 @@ from typing import Annotated
 import typer
 import yaml
 
+from lenzdb import __version__
 from lenzdb.analysis import analyze_lens, analyze_resource
 from lenzdb.engine import ResourceQuery, describe_resource_view, query_lens, query_resource, query_resource_view
 from lenzdb.errors import LenzError
@@ -62,6 +63,27 @@ ProjectOption = Annotated[
         resolve_path=True,
     ),
 ]
+
+
+def version_callback(value: bool) -> None:
+    if value:
+        typer.echo(f"lnz {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def cli(
+    version: Annotated[
+        bool,
+        typer.Option(
+            "--version",
+            callback=version_callback,
+            help="Show the version and exit.",
+            is_eager=True,
+        ),
+    ] = False,
+) -> None:
+    pass
 
 
 def load_project(
@@ -742,13 +764,6 @@ def view(
             help="SQL query over the selected resource, exposed as table name 'resource'.",
         ),
     ] = None,
-    describe: Annotated[
-        bool,
-        typer.Option(
-            "--describe",
-            help="Describe the final query shape instead of returning rows.",
-        ),
-    ] = False,
     project: ProjectOption = None,
 ) -> None:
     project_instance = load_project(project, validate_configuration=False)
@@ -765,11 +780,105 @@ def view(
         page_size=page_size,
         sql=sql,
     )
-    result = (
-        describe_resource_view(project_instance, name, query)
-        if describe
-        else query_resource_view(project_instance, name, query)
+    result = query_resource_view(project_instance, name, query)
+    write_view_output(
+        render_view(result.columns, result.rows, output_format, width=output_width()),
+        output_format,
     )
+
+
+@app.command()
+@handle_errors
+def describe(
+    name: Annotated[
+        str,
+        typer.Argument(
+            help="Lens or table name to describe.",
+            autocompletion=complete_project_resource,
+        ),
+    ],
+    output_format: str = typer.Option(
+        "table",
+        "--format",
+        help=OUTPUT_FORMAT_HELP,
+        case_sensitive=False,
+        show_default=True,
+    ),
+    columns: Annotated[
+        str | None,
+        typer.Option(
+            "--columns",
+            help="Comma-separated columns to describe, e.g. id,title,status.",
+        ),
+    ] = None,
+    distinct: Annotated[
+        str | None,
+        typer.Option(
+            "--distinct",
+            help="Comma-separated columns whose distinct values should be described.",
+        ),
+    ] = None,
+    where: Annotated[
+        str | None,
+        typer.Option(
+            "--filter",
+            help="SQL WHERE fragment evaluated against the resource.",
+        ),
+    ] = None,
+    order: Annotated[
+        str | None,
+        typer.Option(
+            "--order",
+            help="Comma-separated order columns. Prefix with '-' for descending.",
+        ),
+    ] = None,
+    count: Annotated[
+        bool,
+        typer.Option(
+            "--count",
+            help="Describe the row count shape. May be combined with --filter.",
+        ),
+    ] = False,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Maximum number of rows to consider."),
+    ] = None,
+    offset: Annotated[
+        int | None,
+        typer.Option("--offset", help="Number of rows to skip."),
+    ] = None,
+    page: Annotated[
+        int | None,
+        typer.Option("--page", help="One-based page number using the configured page size."),
+    ] = None,
+    page_size: Annotated[
+        int | None,
+        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+    ] = None,
+    sql: Annotated[
+        str | None,
+        typer.Option(
+            "--sql",
+            help="SQL query over the selected resource, exposed as table name 'resource'.",
+        ),
+    ] = None,
+    project: ProjectOption = None,
+) -> None:
+    project_instance = load_project(project, validate_configuration=False)
+    query = build_view_query(
+        project_instance,
+        columns=columns,
+        distinct=distinct,
+        where=where,
+        order=order,
+        count=count,
+        limit=limit,
+        offset=offset,
+        page=page,
+        page_size=page_size,
+        sql=sql,
+    )
+    result = describe_resource_view(project_instance, name, query)
     write_view_output(
         render_view(result.columns, result.rows, output_format, width=output_width()),
         output_format,
