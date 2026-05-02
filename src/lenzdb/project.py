@@ -170,7 +170,6 @@ class Project:
             project_root,
             lenses_dir,
             project_config,
-            require_lenses=not allow_incomplete,
         )
         policies = cls._load_policies(policies_dir)
         view_page_size = cls._load_view_page_size(project_config)
@@ -286,8 +285,6 @@ class Project:
         project_root: Path,
         lenses_dir: Path,
         project_config: dict[str, Any],
-        *,
-        require_lenses: bool = True,
     ) -> dict[str, Path]:
         lenses: dict[str, Path] = {}
         for source_dir in [project_root, lenses_dir]:
@@ -308,12 +305,8 @@ class Project:
             suffix=".sql",
             resource_kind="lens",
             resources=lenses,
-            require_existing=require_lenses,
+            require_existing=True,
         )
-        if require_lenses and not lenses:
-            raise ProjectError(
-                f"No lens SQL files found in {project_root} or {lenses_dir}"
-            )
         return lenses
 
     @classmethod

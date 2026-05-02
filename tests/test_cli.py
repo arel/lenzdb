@@ -30,6 +30,34 @@ def test_view_table_markdown(runner, example_project: Path) -> None:
     assert "p-1" in result.stdout
 
 
+def test_view_table_without_any_lenses(runner, tmp_path: Path) -> None:
+    project_root = tmp_path / "demo"
+    schema_dir = project_root / ".lenzdb" / "schema"
+    data_dir = project_root / ".lenzdb" / "data"
+    schema_dir.mkdir(parents=True)
+    data_dir.mkdir(parents=True)
+    (schema_dir / "projects.yaml").write_text(
+        "table: projects\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "  name:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+    (data_dir / "projects.csv").write_text("id,name\np-1,Alpha\n", encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["view", "projects", "--project", str(project_root), "--format", "markdown"],
+    )
+
+    assert result.exit_code == 0
+    assert "| id | name |" in result.stdout
+    assert "p-1" in result.stdout
+
+
 def test_describe_table_shape(runner, example_project: Path) -> None:
     result = runner.invoke(
         app,

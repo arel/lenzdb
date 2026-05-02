@@ -65,7 +65,7 @@ def render_markdown(columns: list[str], rows: list[dict[str, Any]]) -> str:
 def render_list(columns: list[str], rows: list[dict[str, Any]]) -> str:
     normalized = normalize_rows(columns, rows)
     return "".join(
-        f"- {' | '.join(row.get(column, '') for column in columns)}\n" for row in normalized
+        f"- [{' | '.join(row.get(column, '') for column in columns)}]\n" for row in normalized
     )
 
 
