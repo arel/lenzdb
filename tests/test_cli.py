@@ -185,12 +185,33 @@ def test_view_tsv_and_yaml_formats(runner, example_project: Path) -> None:
     assert "- id: t-1\n  title: Ship CLI skeleton\n" in yaml_result.stdout
 
 
+def test_view_list_format(runner, example_project: Path) -> None:
+    result = runner.invoke(
+        app,
+        [
+            "view",
+            "tasks",
+            "--project",
+            str(example_project),
+            "--format",
+            "list",
+            "--columns",
+            "id,title",
+            "--limit",
+            "1",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "- [t-1 | Ship CLI skeleton]" in result.stdout
+
+
 def test_view_help_lists_output_formats(runner) -> None:
     result = runner.invoke(app, ["view", "--help"])
 
     assert result.exit_code == 0
     assert "Output format:" in result.stdout
-    for output_format in ["table", "markdown", "csv", "tsv", "json", "ndjson", "yaml", "html"]:
+    for output_format in ["table", "list", "markdown", "csv", "tsv", "json", "ndjson", "yaml", "html"]:
         assert output_format in result.stdout
 
 
@@ -199,7 +220,7 @@ def test_list_help_lists_output_formats(runner) -> None:
 
     assert result.exit_code == 0
     assert "Output format:" in result.stdout
-    for output_format in ["table", "markdown", "csv", "tsv", "json", "ndjson", "yaml", "html"]:
+    for output_format in ["table", "list", "markdown", "csv", "tsv", "json", "ndjson", "yaml", "html"]:
         assert output_format in result.stdout
 
 

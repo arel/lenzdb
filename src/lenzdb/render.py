@@ -62,6 +62,13 @@ def render_markdown(columns: list[str], rows: list[dict[str, Any]]) -> str:
     return "\n".join([header, separator, *body]) + "\n"
 
 
+def render_list(columns: list[str], rows: list[dict[str, Any]]) -> str:
+    normalized = normalize_rows(columns, rows)
+    return "".join(
+        f"- {' | '.join(row.get(column, '') for column in columns)}\n" for row in normalized
+    )
+
+
 def render_html(columns: list[str], rows: list[dict[str, Any]]) -> str:
     normalized = normalize_rows(columns, rows)
     parts = [
@@ -117,6 +124,8 @@ def render_view(
         return render_ndjson(columns, rows)
     if output_format == "markdown":
         return render_markdown(columns, rows)
+    if output_format == "list":
+        return render_list(columns, rows)
     if output_format == "html":
         return render_html(columns, rows)
     return render_table(columns, rows, width=width)

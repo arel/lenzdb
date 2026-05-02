@@ -49,7 +49,7 @@ FALLBACK_PAGER_ENV_VAR = "PAGER"
 COLUMNS_ENV_VAR = "LENZDB_COLUMNS"
 FALLBACK_COLUMNS_ENV_VAR = "COLUMNS"
 PAGE_SIZE_ENV_VAR = "LENZDB_PAGE_SIZE"
-OUTPUT_FORMAT_HELP = "Output format: table, markdown, csv, tsv, json, ndjson, yaml, html."
+OUTPUT_FORMAT_HELP = "Output format: table, list, markdown, csv, tsv, json, ndjson, yaml, html."
 
 ProjectOption = Annotated[
     Path | None,
