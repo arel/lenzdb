@@ -591,6 +591,131 @@ def test_edit_prefers_lenzdb_editor_over_editor(
     assert "Ship env edit" in (example_project / "tasks.csv").read_text(encoding="utf-8")
 
 
+def test_edit_untracked_table_without_lenzdb_uses_temporary_schema(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    lenz_dir = example_project / ".lenzdb"
+    for path in sorted(lenz_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        else:
+            path.rmdir()
+    lenz_dir.rmdir()
+
+    editor_script = tmp_path / "edit_tasks.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "path.write_text(text.replace('Write getting started docs', 'Write docs without schema'), encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        ["edit", "tasks", "--project", str(example_project), "--editor", str(editor_script)],
+    )
+
+    assert result.exit_code == 0
+    assert "Changes applied." in result.stdout
+    assert "Info: using temporary schema for untracked table main.tasks" in result.stderr
+    assert "Write docs without schema" in (example_project / "tasks.csv").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_edit_auto_adds_untracked_dependencies_with_default_id_pk(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    (example_project / ".lenzdb" / "schema" / "tasks.yaml").unlink()
+    (example_project / ".lenzdb" / "schema" / "projects.yaml").unlink()
+
+    editor_script = tmp_path / "edit_untracked.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "path.write_text(text.replace('Ship CLI skeleton,todo', 'Ship CLI skeleton,done'), encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Info: auto-added untracked table main.tasks with primary key 'id'." in result.stderr
+    assert "Info: auto-added untracked table main.projects with primary key 'id'." in result.stderr
+    assert (example_project / ".lenzdb" / "schema" / "main.tasks.yaml").exists()
+    assert (example_project / ".lenzdb" / "schema" / "main.projects.yaml").exists()
+    assert "t-1,Ship CLI skeleton,done,p-1" in (example_project / "tasks.csv").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_edit_errors_when_untracked_dependency_lacks_default_id_pk(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    (example_project / ".lenzdb" / "schema" / "tasks.yaml").unlink()
+    (example_project / ".lenzdb" / "schema" / "projects.yaml").unlink()
+    (example_project / "projects.csv").write_text(
+        "key,name\n"
+        "p-1,Core Platform\n"
+        "p-2,Docs Refresh\n",
+        encoding="utf-8",
+    )
+    (example_project / "open_tasks.sql").write_text(
+        "select\n"
+        "  t.id,\n"
+        "  t.title,\n"
+        "  t.status,\n"
+        "  p.name as project_name\n"
+        "from tasks as t\n"
+        "join projects as p on p.key = t.project_id\n"
+        "where t.status != 'done'\n"
+        "order by t.id\n",
+        encoding="utf-8",
+    )
+    editor_script = tmp_path / "noop.sh"
+    editor_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Info: auto-added untracked table main.tasks with primary key 'id'." in result.stderr
+    assert (
+        "depends on untracked tables without a default primary key column 'id': main.projects"
+        in result.stderr
+    )
+
+
 def test_edit_preserves_failed_edit_and_recovers_next_time(
     runner, example_project: Path, tmp_path: Path
 ) -> None:

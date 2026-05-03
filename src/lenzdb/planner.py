@@ -610,7 +610,7 @@ def build_mutation_plan_for_view(
 def apply_mutation_plan(project: Project, plan: MutationPlan) -> MutationPlan:
     if plan.has_changes:
         project.write_rows_map_atomic(plan.rows_by_table, plan.touched_tables)
-        Project.discover(project.root).validate()
+        project.validate()
     return plan
 
 

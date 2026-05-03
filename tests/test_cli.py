@@ -58,6 +58,27 @@ def test_view_table_without_any_lenses(runner, tmp_path: Path) -> None:
     assert "p-1" in result.stdout
 
 
+def test_view_untracked_table_without_lenzdb_uses_temporary_schema(
+    runner, example_project: Path
+) -> None:
+    lenz_dir = example_project / ".lenzdb"
+    for path in sorted(lenz_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        else:
+            path.rmdir()
+    lenz_dir.rmdir()
+
+    result = runner.invoke(
+        app, ["view", "tasks", "--project", str(example_project), "--format", "markdown"]
+    )
+
+    assert result.exit_code == 0
+    assert "| id | title | status | project_id |" in result.stdout
+    assert "Ship CLI skeleton" in result.stdout
+    assert "Info: using temporary schema for untracked table main.tasks" in result.stderr
+
+
 def test_describe_table_shape(runner, example_project: Path) -> None:
     result = runner.invoke(
         app,
@@ -68,6 +89,27 @@ def test_describe_table_shape(runner, example_project: Path) -> None:
     assert "| column | type | primary_key | writable |" in result.stdout
     assert "| id | VARCHAR | yes | no |" in result.stdout
     assert "| status | VARCHAR | no | yes |" in result.stdout
+
+
+def test_describe_untracked_table_without_lenzdb_uses_temporary_schema(
+    runner, example_project: Path
+) -> None:
+    lenz_dir = example_project / ".lenzdb"
+    for path in sorted(lenz_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        else:
+            path.rmdir()
+    lenz_dir.rmdir()
+
+    result = runner.invoke(
+        app, ["describe", "tasks", "--project", str(example_project), "--format", "markdown"]
+    )
+
+    assert result.exit_code == 0
+    assert "| column | type | primary_key | writable |" in result.stdout
+    assert "| id | VARCHAR | yes | no |" in result.stdout
+    assert "Info: using temporary schema for untracked table main.tasks" in result.stderr
 
 
 def test_describe_lens_selected_columns(runner, example_project: Path) -> None:
@@ -89,6 +131,23 @@ def test_describe_lens_selected_columns(runner, example_project: Path) -> None:
     assert "| id | VARCHAR | yes | no |" in result.stdout
     assert "| project_name | VARCHAR | no | yes |" in result.stdout
     assert "title" not in result.stdout
+
+
+def test_describe_lens_with_untracked_dependencies_keeps_notices_on_stderr(
+    runner, example_project: Path
+) -> None:
+    (example_project / ".lenzdb" / "schema" / "tasks.yaml").unlink()
+    (example_project / ".lenzdb" / "schema" / "projects.yaml").unlink()
+
+    result = runner.invoke(
+        app,
+        ["describe", "open_tasks", "--project", str(example_project), "--format", "markdown"],
+    )
+
+    assert result.exit_code == 0
+    assert "| column | type | primary_key | writable |" in result.stdout
+    assert "Info: using temporary schema for untracked table main.tasks" in result.stderr
+    assert "Info: using temporary schema for untracked table main.projects" in result.stderr
 
 
 def test_describe_count_and_sql_shapes(runner, example_project: Path) -> None:
@@ -141,6 +200,23 @@ def test_view_ignores_unrelated_untracked_csv(runner, example_project: Path) -> 
 
     assert result.exit_code == 0
     assert "p-1" in result.stdout
+
+
+def test_view_lens_with_untracked_dependencies_uses_temporary_schemas(
+    runner, example_project: Path
+) -> None:
+    (example_project / ".lenzdb" / "schema" / "tasks.yaml").unlink()
+    (example_project / ".lenzdb" / "schema" / "projects.yaml").unlink()
+
+    result = runner.invoke(
+        app, ["view", "open_tasks", "--project", str(example_project), "--format", "markdown"]
+    )
+
+    assert result.exit_code == 0
+    assert "| id | title | status | project_name |" in result.stdout
+    assert "Ship CLI skeleton" in result.stdout
+    assert "Info: using temporary schema for untracked table main.tasks" in result.stderr
+    assert "Info: using temporary schema for untracked table main.projects" in result.stderr
 
 
 def test_view_table_output_is_not_duplicated(runner, example_project: Path) -> None:
@@ -874,8 +950,7 @@ def test_explain_table_resource(runner, example_project: Path) -> None:
 def test_missing_project_error_is_helpful(runner, tmp_path: Path) -> None:
     result = runner.invoke(app, ["view", "all_tasks", "--project", str(tmp_path)])
     assert result.exit_code == 1
-    assert "No LenzDB project found" in result.stderr
-    assert "Run from a project root, pass --project, or set $LENZDB_PROJECT_ROOT." in result.stderr
+    assert "Unknown resource 'all_tasks'" in result.stderr
 
 
 def test_check_and_explain(runner, example_project: Path) -> None:
