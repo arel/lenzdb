@@ -10,8 +10,10 @@ primary_key: [org_id, user_id]
 Try:
 
 ```bash
-lnz add membership_roles.sql --project examples/multi-column-pk
-lnz list --project examples/multi-column-pk
-lnz view membership_roles --project examples/multi-column-pk
-lnz explain membership_roles --project examples/multi-column-pk
+# (current dir: examples/multi-column-pk)
+lnz list
+lnz add membership_roles.sql
+lnz list
+lnz view membership_roles
+lnz explain membership_roles
 ```
