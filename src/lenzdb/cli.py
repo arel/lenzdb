@@ -15,11 +15,14 @@ from typing import Annotated
 
 import typer
 import yaml
+from sqlglot import exp, parse_one
+from sqlglot.errors import ParseError
 
 from lenzdb import __version__
 from lenzdb.analysis import analyze_lens, analyze_resource
 from lenzdb.engine import ResourceQuery, describe_resource_view, query_lens, query_resource, query_resource_view
 from lenzdb.errors import LenzError
+from lenzdb.models import ColumnSchema, TableSchema
 from lenzdb.planner import (
     apply_mutation_plan,
     build_mutation_plan,
@@ -34,6 +37,7 @@ from lenzdb.project import (
     TABLES_CONFIG_KEY,
     Project,
     normalize_primary_key,
+    parse_qualified_name,
     parse_namespaced_name,
     resource_key,
     split_resource_key,
@@ -147,6 +151,255 @@ def add_current_dir_resources(project: Project) -> None:
         namespace, name = parse_namespaced_name(path.stem)
         key = resource_key(namespace, name)
         project.lenses.setdefault(key, path.resolve())
+
+
+def stderr_echo(message: str) -> None:
+    typer.echo(message, err=True)
+
+
+def referenced_lens_tables(project: Project, resource_name: str) -> list[str]:
+    try:
+        resolved_lens_name = project.resolve_lens_name(resource_name)
+    except LenzError:
+        return []
+
+    sql = project.lens_sql(resolved_lens_name)
+    try:
+        expression = parse_one(sql, read="duckdb")
+    except ParseError as exc:
+        raise LenzError(f"Failed to parse lens {resolved_lens_name!r}: {exc}") from exc
+
+    cte_names = {cte.alias for cte in expression.find_all(exp.CTE)}
+    tables: list[str] = []
+    seen: set[str] = set()
+    for table_expression in expression.find_all(exp.Table):
+        if not table_expression.db and table_expression.name in cte_names:
+            continue
+        try:
+            table_name = project.resolve_table_name(table_expression.name, table_expression.db or None)
+        except LenzError:
+            try:
+                table_name = project._resolve_resource_name(
+                    table_expression.name,
+                    project.table_paths,
+                    "table",
+                    table_expression.db or None,
+                )
+            except LenzError as inner_exc:
+                raise inner_exc
+        if table_name not in seen:
+            seen.add(table_name)
+            tables.append(table_name)
+    return tables
+
+
+def temporary_schema_for_table(project: Project, table_key: str) -> tuple[TableSchema, str]:
+    path = project.table_paths.get(table_key)
+    if path is None:
+        raise LenzError(f"Unknown untracked CSV table {table_key!r}")
+    header = read_csv_header(path)
+    if "id" in header:
+        primary_key = "id"
+        note = f"Info: using temporary schema for untracked table {table_key} with primary key 'id'."
+    else:
+        primary_key = header[0]
+        note = (
+            f"Warning: using temporary schema for untracked table {table_key} with inferred "
+            f"primary key {primary_key!r} from the first column."
+        )
+    namespace, name = split_resource_key(table_key)
+    table_name = name if namespace == DEFAULT_NAMESPACE else table_key
+    schema = TableSchema(
+        table=table_name,
+        primary_key=primary_key,
+        columns={
+            column: ColumnSchema(type="string", immutable=(column == primary_key))
+            for column in header
+        },
+    )
+    return schema, note
+
+
+def ensure_temporary_dependency_schemas(project: Project, resource_name: str) -> None:
+    for table_name in referenced_lens_tables(project, resource_name):
+        if table_name in project.schemas:
+            continue
+        if table_name not in project.table_paths:
+            raise LenzError(f"Lens {resource_name!r} depends on missing table {table_name!r}")
+        schema, note = temporary_schema_for_table(project, table_name)
+        project.schemas[table_name] = schema
+        stderr_echo(note)
+
+
+def ensure_temporary_resource_schema(project: Project, resource_name: str) -> None:
+    try:
+        project.resolve_resource_name(resource_name)
+        return
+    except LenzError:
+        pass
+
+    try:
+        table_name = project._resolve_resource_name(resource_name, project.table_paths, "table")
+    except LenzError:
+        return
+
+    if table_name in project.schemas:
+        return
+    schema, note = temporary_schema_for_table(project, table_name)
+    project.schemas[table_name] = schema
+    stderr_echo(note)
+
+
+def ensure_editable_resource_table(project: Project, resource_name: str) -> bool:
+    try:
+        project.resolve_resource_name(resource_name)
+        return False
+    except LenzError:
+        pass
+
+    try:
+        table_name = project._resolve_resource_name(resource_name, project.table_paths, "table")
+    except LenzError:
+        return False
+
+    if table_name in project.schemas:
+        return False
+
+    path = project.table_paths.get(table_name)
+    if path is None:
+        raise LenzError(f"Unknown untracked CSV table {resource_name!r}; pass a CSV path instead")
+
+    header = read_csv_header(path)
+    if "id" not in header:
+        raise LenzError(
+            f"{resource_name} is an untracked table without a default primary key column 'id'. "
+            "Run lnz add <table> --primary-key <column> and retry."
+        )
+
+    try:
+        schema_path, registered = add_table_schema(project, table_name, path, ["id"])
+    except LenzError as exc:
+        raise LenzError(
+            f"Cannot auto-add untracked table {table_name!r} with default primary key 'id': {exc}"
+        ) from exc
+
+    stderr_echo(f"Info: auto-added untracked table {table_name} with primary key 'id'.")
+    stderr_echo(f"Info: wrote schema {relative_path(project, schema_path)}.")
+    if registered:
+        stderr_echo("Info: updated .lenzdb/project.yaml.")
+    return True
+
+
+def add_table_schema(project: Project, table_key: str, path: Path, primary_key: list[str]) -> tuple[Path, bool]:
+    header = read_csv_header(path)
+    validate_csv_primary_key(path, primary_key)
+    document = schema_document(table_key, primary_key, header)
+    schema_path = write_schema_file(
+        project,
+        table_key,
+        document,
+    )
+    project.schemas[table_key] = TableSchema.model_validate(document)
+    registered = ensure_table_registered(project, table_key, path)
+    return schema_path, registered
+
+
+def add_table_schema_with_overrides(
+    project: Project,
+    table_key: str,
+    path: Path,
+    primary_key: list[str],
+    column_overrides: dict[str, dict[str, object]],
+) -> tuple[Path, bool]:
+    header = read_csv_header(path)
+    validate_csv_primary_key(path, primary_key)
+    document = schema_document(table_key, primary_key, header)
+    for column_name, override in column_overrides.items():
+        if column_name in document["columns"]:
+            document["columns"][column_name].update(override)
+    schema_path = write_schema_file(project, table_key, document)
+    project.schemas[table_key] = TableSchema.model_validate(document)
+    registered = ensure_table_registered(project, table_key, path)
+    return schema_path, registered
+
+
+def inferred_auto_add_column_overrides(
+    project: Project, resource_name: str, table_key: str
+) -> dict[str, dict[str, object]]:
+    overrides: dict[str, dict[str, object]] = {}
+    policy = project.policy_for(resource_name)
+    if policy is None:
+        return overrides
+    try:
+        primary_table = project._resolve_resource_name(
+            policy.primary_table,
+            project.table_paths,
+            "table",
+        )
+    except LenzError:
+        return overrides
+    if primary_table != table_key:
+        return overrides
+
+    for reference_policy in policy.references.values():
+        write_table, write_column = parse_qualified_name(reference_policy.write_to)
+        try:
+            resolved_table = project._resolve_resource_name(
+                write_table,
+                project.table_paths,
+                "table",
+            )
+            lookup_table = project._resolve_resource_name(
+                reference_policy.lookup.table,
+                project.table_paths,
+                "table",
+            )
+        except LenzError:
+            continue
+        if resolved_table != table_key:
+            continue
+        overrides[write_column] = {"type": "ref", "table": lookup_table}
+    return overrides
+
+
+def ensure_editable_dependency_tables(project: Project, resource_name: str) -> None:
+    added_tables: list[str] = []
+    blocked_tables: list[str] = []
+
+    for table_name in referenced_lens_tables(project, resource_name):
+        if table_name in project.schemas:
+            continue
+        path = project.table_paths.get(table_name)
+        if path is None:
+            raise LenzError(f"Lens {resource_name!r} depends on missing table {table_name!r}")
+        header = read_csv_header(path)
+        if "id" not in header:
+            blocked_tables.append(table_name)
+            continue
+        try:
+            schema_path, registered = add_table_schema_with_overrides(
+                project,
+                table_name,
+                path,
+                ["id"],
+                inferred_auto_add_column_overrides(project, resource_name, table_name),
+            )
+        except LenzError as exc:
+            raise LenzError(
+                f"Cannot auto-add untracked table {table_name!r} with default primary key 'id': {exc}"
+            ) from exc
+        added_tables.append(table_name)
+        stderr_echo(f"Info: auto-added untracked table {table_name} with primary key 'id'.")
+        stderr_echo(f"Info: wrote schema {relative_path(project, schema_path)}.")
+        if registered:
+            stderr_echo("Info: updated .lenzdb/project.yaml.")
+
+    if blocked_tables:
+        blocked = ", ".join(blocked_tables)
+        raise LenzError(
+            f"{resource_name} depends on untracked tables without a default primary key column 'id': "
+            f"{blocked}. Run lnz add <table> --primary-key <column> for each table, then retry."
+        )
 
 
 def relative_path(project: Project, path: Path | None) -> str:
@@ -674,14 +927,9 @@ def add(
 
     header = read_csv_header(path)
     selected_primary_key = choose_primary_key(header, primary_key)
-    validate_csv_primary_key(path, selected_primary_key)
-
-    schema_path = write_schema_file(
-        project_instance,
-        table_key,
-        schema_document(table_key, selected_primary_key, header),
+    schema_path, registered = add_table_schema(
+        project_instance, table_key, path, selected_primary_key
     )
-    registered = ensure_table_registered(project_instance, table_key, path)
 
     typer.echo(f"Added table {table_key}")
     typer.echo(f"Schema: {relative_path(project_instance, schema_path)}")
@@ -766,7 +1014,14 @@ def view(
     ] = None,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project, validate_configuration=False)
+    project_instance = load_project(
+        project,
+        validate_configuration=False,
+        allow_incomplete=True,
+    )
+    add_current_dir_resources(project_instance)
+    ensure_temporary_resource_schema(project_instance, name)
+    ensure_temporary_dependency_schemas(project_instance, name)
     query = build_view_query(
         project_instance,
         columns=columns,
@@ -864,7 +1119,14 @@ def describe(
     ] = None,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project, validate_configuration=False)
+    project_instance = load_project(
+        project,
+        validate_configuration=False,
+        allow_incomplete=True,
+    )
+    add_current_dir_resources(project_instance)
+    ensure_temporary_resource_schema(project_instance, name)
+    ensure_temporary_dependency_schemas(project_instance, name)
     query = build_view_query(
         project_instance,
         columns=columns,
@@ -1066,7 +1328,22 @@ def edit(
     ] = None,
     project: ProjectOption = None,
 ) -> None:
-    project_instance = load_project(project, validate_configuration=False)
+    project_instance = load_project(
+        project,
+        validate_configuration=False,
+        allow_incomplete=True,
+    )
+    add_current_dir_resources(project_instance)
+    auto_added_resource = ensure_editable_resource_table(project_instance, resource_name)
+    ensure_temporary_resource_schema(project_instance, resource_name)
+    ensure_editable_dependency_tables(project_instance, resource_name)
+    if auto_added_resource or referenced_lens_tables(project_instance, resource_name):
+        project_instance = load_project(
+            project,
+            validate_configuration=False,
+            allow_incomplete=True,
+        )
+        add_current_dir_resources(project_instance)
     query = build_view_query(
         project_instance,
         columns=columns,

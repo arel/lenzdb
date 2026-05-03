@@ -44,6 +44,8 @@ class LensAnalysis:
     writable: bool
     reasons: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    inferred_defaults: dict[str, str] = field(default_factory=dict)
+    inferred_default_sources: dict[str, str] = field(default_factory=dict)
 
     def column_map(self) -> dict[str, AnalyzedColumn]:
         return {column.output_name: column for column in self.columns}
@@ -55,6 +57,18 @@ def split_and(expression: exp.Expression | None) -> list[exp.Expression]:
     if isinstance(expression, exp.And):
         return [*split_and(expression.this), *split_and(expression.expression)]
     return [expression]
+
+
+def literal_default_value(expression: exp.Expression) -> str | None:
+    if isinstance(expression, exp.Boolean):
+        return "true" if expression.this else "false"
+    if isinstance(expression, exp.Literal):
+        return expression.this
+    if isinstance(expression, exp.Cast):
+        inner = expression.this
+        if isinstance(inner, exp.Literal):
+            return inner.this
+    return None
 
 
 def resolve_column_table(
@@ -135,6 +149,122 @@ def safe_join_reason(
     return False, (
         f"join to {join_table!r} is not recognized as a many-to-one lookup from the primary table"
     )
+
+
+def infer_defaults_from_lens_where(
+    project: Project,
+    primary_table: str,
+    primary_alias: str,
+    where_expression: exp.Expression | None,
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    defaults: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    warnings: list[str] = []
+    if where_expression is None:
+        return defaults, sources, warnings
+
+    primary_schema = project.schema_for(primary_table)
+    conflicts: set[str] = set()
+    aliases = {primary_alias: primary_table}
+    for condition in split_and(where_expression):
+        if not isinstance(condition, exp.EQ):
+            continue
+        left = condition.this
+        right = condition.expression
+        if not isinstance(left, exp.Column):
+            continue
+        value = literal_default_value(right)
+        if value is None:
+            continue
+
+        source_table = resolve_column_table(left, aliases, project, primary_table)
+        if source_table != primary_table:
+            continue
+
+        source_column = left.name
+        if source_column in project.primary_key_columns(primary_table):
+            continue
+        schema_column = primary_schema.columns.get(source_column)
+        if schema_column is None or schema_column.immutable:
+            continue
+        if source_column in conflicts:
+            continue
+
+        existing = defaults.get(source_column)
+        if existing is None:
+            defaults[source_column] = value
+            sources[source_column] = condition.sql(dialect="duckdb")
+            continue
+        if existing != value:
+            defaults.pop(source_column, None)
+            sources.pop(source_column, None)
+            conflicts.add(source_column)
+            warnings.append(
+                f"conflicting inferred defaults for {primary_table}.{source_column}; ignoring"
+            )
+
+    return defaults, sources, warnings
+
+
+def infer_defaults_from_resource_where(
+    project: Project,
+    analysis: LensAnalysis,
+    where_sql: str | None,
+) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    defaults: dict[str, str] = {}
+    sources: dict[str, str] = {}
+    warnings: list[str] = []
+    if where_sql is None:
+        return defaults, sources, warnings
+
+    try:
+        where_expression = parse_one(where_sql, read="duckdb")
+    except ParseError as exc:
+        warnings.append(f"failed to parse filter defaults: {exc}")
+        return defaults, sources, warnings
+
+    primary_schema = project.schema_for(analysis.primary_table or "")
+    conflicts: set[str] = set()
+    column_map = analysis.column_map()
+    for condition in split_and(where_expression):
+        if not isinstance(condition, exp.EQ):
+            continue
+        left = condition.this
+        right = condition.expression
+        if not isinstance(left, exp.Column) or left.table:
+            continue
+        value = literal_default_value(right)
+        if value is None:
+            continue
+
+        analyzed_column = column_map.get(left.name)
+        if analyzed_column is None or analyzed_column.source_table != analysis.primary_table:
+            continue
+        source_column = analyzed_column.source_column
+        if source_column is None or source_column in project.primary_key_columns(
+            analysis.primary_table or ""
+        ):
+            continue
+        schema_column = primary_schema.columns.get(source_column)
+        if schema_column is None or schema_column.immutable:
+            continue
+        if source_column in conflicts:
+            continue
+
+        existing = defaults.get(source_column)
+        if existing is None:
+            defaults[source_column] = value
+            sources[source_column] = condition.sql(dialect="duckdb")
+            continue
+        if existing != value:
+            defaults.pop(source_column, None)
+            sources.pop(source_column, None)
+            conflicts.add(source_column)
+            warnings.append(
+                f"conflicting inferred defaults for {analysis.primary_table}.{source_column}; ignoring"
+            )
+
+    return defaults, sources, warnings
 
 
 def _column_reason(kind: ColumnKind) -> str:
@@ -229,13 +359,13 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
 
     for join in joins:
         if not isinstance(join.this, exp.Table):
-            reasons.append("join target must be a concrete table")
+            warnings.append("join target must be a concrete table")
             continue
         join_table = project.resolve_table_name(join.this.name, join.this.db or None)
         join_alias = join.this.alias_or_name
         aliases[join_alias] = join_table
         if join.args.get("side") not in {None, "LEFT", "RIGHT", "INNER"}:
-            reasons.append(
+            warnings.append(
                 f"join to {join_table!r} uses unsupported join side {join.args.get('side')!r}"
             )
             continue
@@ -248,7 +378,7 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
             project,
         )
         if not is_safe:
-            reasons.append(reason)
+            warnings.append(reason)
         else:
             warnings.append(reason)
 
@@ -375,6 +505,14 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
     if policy is not None:
         validate_policy_against_analysis(project, policy, columns)
 
+    inferred_defaults, inferred_default_sources, default_warnings = infer_defaults_from_lens_where(
+        project,
+        primary_table,
+        primary_alias,
+        expression.args.get("where").this if expression.args.get("where") is not None else None,
+    )
+    warnings.extend(default_warnings)
+
     writable = not reasons and len(primary_key_outputs) == len(primary_keys)
     return LensAnalysis(
         lens_name=lens_name,
@@ -386,6 +524,8 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
         writable=writable,
         reasons=reasons,
         warnings=warnings,
+        inferred_defaults=inferred_defaults,
+        inferred_default_sources=inferred_default_sources,
     )
 
 

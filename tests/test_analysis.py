@@ -22,6 +22,31 @@ def test_analysis_classifies_columns(example_project: Path) -> None:
     assert analysis.primary_key_output == "id"
 
 
+def test_analysis_infers_defaults_from_where_clause(example_project: Path) -> None:
+    (example_project / "doing_tasks.sql").write_text(
+        "select id, title from tasks where status = 'doing' order by id\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    analysis = analyze_lens(project, "doing_tasks")
+
+    assert analysis.inferred_defaults == {"status": "doing"}
+    assert analysis.inferred_default_sources == {"status": "status = 'doing'"}
+
+
+def test_analysis_ignores_non_qualifying_where_predicates(example_project: Path) -> None:
+    (example_project / "not_done_tasks.sql").write_text(
+        "select id, title from tasks where status != 'done' order by id\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    analysis = analyze_lens(project, "not_done_tasks")
+
+    assert analysis.inferred_defaults == {}
+
+
 def test_analysis_requires_all_composite_primary_key_outputs(example_project: Path) -> None:
     (example_project / "memberships.csv").write_text(
         "org_id,user_id,role\n"
@@ -104,4 +129,37 @@ def test_analysis_rejects_unsafe_join(example_project: Path) -> None:
     project = Project.discover(example_project)
     analysis = analyze_lens(project, "task_comments")
     assert analysis.writable is False
-    assert any("not recognized as a many-to-one lookup" in reason for reason in analysis.reasons)
+    assert any("not recognized as a many-to-one lookup" in warning for warning in analysis.warnings)
+    assert any("do not map one-to-one" in reason for reason in analysis.reasons)
+
+
+def test_analysis_allows_primary_table_writes_with_read_only_join_without_policy(
+    example_project: Path,
+) -> None:
+    policy_path = example_project / ".lenzdb" / "policies" / "open_tasks.yaml"
+    policy_path.unlink()
+    schema_path = example_project / ".lenzdb" / "schema" / "tasks.yaml"
+    schema_path.write_text(
+        "table: tasks\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  title:\n"
+        "    type: string\n"
+        "  status:\n"
+        "    type: enum\n"
+        "    values: [todo, doing, done]\n"
+        "  project_id:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    analysis = analyze_lens(project, "open_tasks")
+
+    assert analysis.writable is True
+    assert analysis.column_map()["status"].writable is True
+    assert analysis.column_map()["project_name"].writable is False
+    assert any("not recognized as a many-to-one lookup" in warning for warning in analysis.warnings)

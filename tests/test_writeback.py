@@ -6,7 +6,8 @@ import pytest
 
 from lenzdb.cli import app
 from lenzdb.errors import MutationError
-from lenzdb.planner import apply_mutation_plan, build_mutation_plan
+from lenzdb.engine import ResourceQuery
+from lenzdb.planner import apply_mutation_plan, build_mutation_plan, build_mutation_plan_for_view
 from lenzdb.project import Project
 
 
@@ -71,6 +72,29 @@ def test_plan_inserts_and_creates_reference(example_project: Path, tmp_path: Pat
     assert new_task["status"] == "todo"
 
 
+def test_plan_applies_defaults_from_view_filters(example_project: Path, tmp_path: Path) -> None:
+    edited = tmp_path / "edited.csv"
+    edited.write_text(
+        "id,title\n"
+        "t-2,Write getting started docs\n"
+        ",Add release checklist\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    query = ResourceQuery(columns=["id", "title"], where="status = 'doing'")
+    plan = build_mutation_plan_for_view(project, "tasks", query, edited)
+
+    assert len(plan.inserts) == 1
+    assert plan.inserts[0].row["status"] == "doing"
+    assert plan.inferred_defaults == {"status": "doing"}
+
+    apply_mutation_plan(project, plan)
+    tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
+    assert "Add release checklist" in tasks_csv
+    assert ",Add release checklist,doing," in tasks_csv
+
+
 def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> None:
     edited = tmp_path / "edited.csv"
     edited.write_text(
@@ -88,6 +112,78 @@ def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> No
     assert "Ship production CLI" in tasks_csv
     assert "t-1,Ship production CLI,doing,p-1" in tasks_csv
     assert b"\r\n" not in (example_project / "tasks.csv").read_bytes()
+
+
+def test_plan_updates_primary_table_columns_without_policy_or_ref_join_metadata(
+    example_project: Path, tmp_path: Path
+) -> None:
+    policy_path = example_project / ".lenzdb" / "policies" / "open_tasks.yaml"
+    policy_path.unlink()
+    schema_path = example_project / ".lenzdb" / "schema" / "tasks.yaml"
+    schema_path.write_text(
+        "table: tasks\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  title:\n"
+        "    type: string\n"
+        "  status:\n"
+        "    type: enum\n"
+        "    values: [todo, doing, done]\n"
+        "  project_id:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+    edited = tmp_path / "edited.csv"
+    edited.write_text(
+        "id,title,status,project_name\n"
+        "t-1,Ship CLI skeleton,done,Core Platform\n"
+        "t-2,Write getting started docs,doing,Docs Refresh\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    plan = build_mutation_plan(project, "open_tasks", edited)
+
+    assert len(plan.updates) == 1
+    assert plan.updates[0].changes == {"status": "done"}
+
+
+def test_plan_rejects_joined_column_edits_without_policy(
+    example_project: Path, tmp_path: Path
+) -> None:
+    policy_path = example_project / ".lenzdb" / "policies" / "open_tasks.yaml"
+    policy_path.unlink()
+    schema_path = example_project / ".lenzdb" / "schema" / "tasks.yaml"
+    schema_path.write_text(
+        "table: tasks\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  title:\n"
+        "    type: string\n"
+        "  status:\n"
+        "    type: enum\n"
+        "    values: [todo, doing, done]\n"
+        "  project_id:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+    edited = tmp_path / "edited.csv"
+    edited.write_text(
+        "id,title,status,project_name\n"
+        "t-1,Ship CLI skeleton,todo,New Project Name\n"
+        "t-2,Write getting started docs,doing,Docs Refresh\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    with pytest.raises(MutationError, match="Joined lookup column 'project_name' is not writable"):
+        build_mutation_plan(project, "open_tasks", edited)
 
 
 def test_table_resource_plan_and_apply(example_project: Path, tmp_path: Path) -> None:
@@ -493,6 +589,133 @@ def test_edit_prefers_lenzdb_editor_over_editor(
     assert result.exit_code == 0
     assert "Changes applied." in result.stdout
     assert "Ship env edit" in (example_project / "tasks.csv").read_text(encoding="utf-8")
+
+
+def test_edit_untracked_table_without_lenzdb_uses_temporary_schema(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    lenz_dir = example_project / ".lenzdb"
+    for path in sorted(lenz_dir.rglob("*"), reverse=True):
+        if path.is_file():
+            path.unlink()
+        else:
+            path.rmdir()
+    lenz_dir.rmdir()
+
+    editor_script = tmp_path / "edit_tasks.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "path.write_text(text.replace('Write getting started docs', 'Write docs without schema'), encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        ["edit", "tasks", "--project", str(example_project), "--editor", str(editor_script)],
+    )
+
+    assert result.exit_code == 0
+    assert "Changes applied." in result.stdout
+    assert "Info: auto-added untracked table main.tasks with primary key 'id'." in result.stderr
+    assert "Info: using temporary schema" not in result.stderr
+    assert (example_project / ".lenzdb" / "schema" / "main.tasks.yaml").exists()
+    assert "Write docs without schema" in (example_project / "tasks.csv").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_edit_auto_adds_untracked_dependencies_with_default_id_pk(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    (example_project / ".lenzdb" / "schema" / "tasks.yaml").unlink()
+    (example_project / ".lenzdb" / "schema" / "projects.yaml").unlink()
+
+    editor_script = tmp_path / "edit_untracked.sh"
+    editor_script.write_text(
+        "#!/usr/bin/env bash\n"
+        "python - \"$1\" <<'PY'\n"
+        "from pathlib import Path\n"
+        "path = Path(__import__('sys').argv[1])\n"
+        "text = path.read_text(encoding='utf-8')\n"
+        "path.write_text(text.replace('Ship CLI skeleton,todo', 'Ship CLI skeleton,done'), encoding='utf-8')\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Info: auto-added untracked table main.tasks with primary key 'id'." in result.stderr
+    assert "Info: auto-added untracked table main.projects with primary key 'id'." in result.stderr
+    assert (example_project / ".lenzdb" / "schema" / "main.tasks.yaml").exists()
+    assert (example_project / ".lenzdb" / "schema" / "main.projects.yaml").exists()
+    assert "t-1,Ship CLI skeleton,done,p-1" in (example_project / "tasks.csv").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_edit_errors_when_untracked_dependency_lacks_default_id_pk(
+    runner, example_project: Path, tmp_path: Path
+) -> None:
+    (example_project / ".lenzdb" / "schema" / "tasks.yaml").unlink()
+    (example_project / ".lenzdb" / "schema" / "projects.yaml").unlink()
+    (example_project / "projects.csv").write_text(
+        "key,name\n"
+        "p-1,Core Platform\n"
+        "p-2,Docs Refresh\n",
+        encoding="utf-8",
+    )
+    (example_project / "open_tasks.sql").write_text(
+        "select\n"
+        "  t.id,\n"
+        "  t.title,\n"
+        "  t.status,\n"
+        "  p.name as project_name\n"
+        "from tasks as t\n"
+        "join projects as p on p.key = t.project_id\n"
+        "where t.status != 'done'\n"
+        "order by t.id\n",
+        encoding="utf-8",
+    )
+    editor_script = tmp_path / "noop.sh"
+    editor_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    editor_script.chmod(0o755)
+
+    result = runner.invoke(
+        app,
+        [
+            "edit",
+            "open_tasks",
+            "--project",
+            str(example_project),
+            "--editor",
+            str(editor_script),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Info: auto-added untracked table main.tasks with primary key 'id'." in result.stderr
+    assert (
+        "depends on untracked tables without a default primary key column 'id': main.projects"
+        in result.stderr
+    )
 
 
 def test_edit_preserves_failed_edit_and_recovers_next_time(

@@ -163,6 +163,13 @@ def render_analysis(analysis: LensAnalysis) -> str:
         lines.extend(["", "Notes:"])
         for warning in analysis.warnings:
             lines.append(f"  - {warning}")
+    if analysis.inferred_defaults:
+        lines.extend(["", "Inferred defaults:"])
+        for column_name in sorted(analysis.inferred_defaults):
+            value = analysis.inferred_defaults[column_name]
+            source = analysis.inferred_default_sources.get(column_name)
+            suffix = f" (from {source})" if source else ""
+            lines.append(f"  - {column_name} = {value!r}{suffix}")
     return "\n".join(lines) + "\n"
 
 
@@ -187,6 +194,13 @@ def render_plan(plan: MutationPlan) -> str:
         f"Inserts: {len(plan.inserts)}",
         f"Reference creates: {len(plan.reference_creations)}",
     ]
+    if plan.inferred_defaults:
+        lines.append("Inferred defaults:")
+        for column_name in sorted(plan.inferred_defaults):
+            value = plan.inferred_defaults[column_name]
+            source = plan.inferred_default_sources.get(column_name)
+            suffix = f" (from {source})" if source else ""
+            lines.append(f"  - {column_name} = {value!r}{suffix}")
     if plan.generated_primary_keys:
         lines.append("Generated primary keys:")
         for key in plan.generated_primary_keys:
