@@ -9,7 +9,7 @@ def test_version_flag(runner) -> None:
     result = runner.invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert result.stdout.strip() == "lnz 0.1.3"
+    assert result.stdout.strip() == "lnz 0.1.4"
 
 
 def test_view_markdown(runner, example_project: Path) -> None:
