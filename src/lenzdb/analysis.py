@@ -10,8 +10,7 @@ from sqlglot.errors import ParseError
 
 from lenzdb.engine import query_lens
 from lenzdb.errors import LensAnalysisError, ProjectError
-from lenzdb.models import LensPolicy
-from lenzdb.project import Project, canonical_scalar, parse_qualified_name
+from lenzdb.project import Project, canonical_scalar
 
 ColumnKind = Literal[
     "direct_base",
@@ -78,11 +77,11 @@ def resolve_column_table(
     if explicit_table:
         if explicit_table in aliases:
             return aliases[explicit_table]
-        explicit_namespace = column_expression.args.get("db")
         try:
             return project.resolve_table_name(
-                explicit_table,
-                explicit_namespace.name if explicit_namespace is not None else None,
+                f"{column_expression.db}.{explicit_table}"
+                if column_expression.db
+                else explicit_table
             )
         except ProjectError:
             return None
@@ -348,7 +347,9 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
 
     primary_table_expression = from_expression.this
     primary_table = project.resolve_table_name(
-        primary_table_expression.name, primary_table_expression.db or None
+        f"{primary_table_expression.db}.{primary_table_expression.name}"
+        if primary_table_expression.db
+        else primary_table_expression.name
     )
     primary_alias = primary_table_expression.alias_or_name
 
@@ -361,7 +362,9 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
         if not isinstance(join.this, exp.Table):
             warnings.append("join target must be a concrete table")
             continue
-        join_table = project.resolve_table_name(join.this.name, join.this.db or None)
+        join_table = project.resolve_table_name(
+            f"{join.this.db}.{join.this.name}" if join.this.db else join.this.name
+        )
         join_alias = join.this.alias_or_name
         aliases[join_alias] = join_table
         if join.args.get("side") not in {None, "LEFT", "RIGHT", "INNER"}:
@@ -382,7 +385,6 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
         else:
             warnings.append(reason)
 
-    policy = project.policy_for(lens_name)
     columns: list[AnalyzedColumn] = []
     primary_keys = project.primary_key_columns(primary_table)
     primary_key_outputs_by_column: dict[str, str] = {}
@@ -434,12 +436,8 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
                     reason = "column is immutable in schema"
             elif source_table in aliases.values():
                 kind = "joined_lookup"
-                writable = bool(policy and output_name in policy.references)
-                reason = (
-                    "reference policy allows writeback"
-                    if writable
-                    else "joined lookup columns are read-only without a reference policy"
-                )
+                writable = False
+                reason = "joined lookup columns are read-only in the flat manifest model"
             else:
                 kind = "computed"
                 writable = False
@@ -502,9 +500,6 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
                 break
             seen_keys.add(key)
 
-    if policy is not None:
-        validate_policy_against_analysis(project, policy, columns)
-
     inferred_defaults, inferred_default_sources, default_warnings = infer_defaults_from_lens_where(
         project,
         primary_table,
@@ -527,35 +522,3 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
         inferred_defaults=inferred_defaults,
         inferred_default_sources=inferred_default_sources,
     )
-
-
-def validate_policy_against_analysis(
-    project: Project, policy: LensPolicy, columns: list[AnalyzedColumn]
-) -> None:
-    available = {column.output_name: column for column in columns}
-    primary_table = project.resolve_table_name(policy.primary_table)
-    schema = project.schema_for(primary_table)
-
-    for output_name, target in policy.editable.items():
-        analyzed = available.get(output_name)
-        if analyzed is None:
-            raise ProjectError(f"Policy references missing output column {output_name!r}")
-        if analyzed.kind not in {"direct_base", "aliased_base"}:
-            raise ProjectError(
-                f"Editable policy column {output_name!r} must select a primary-table base column"
-            )
-        table_name, column_name = parse_qualified_name(target)
-        target_table = project.resolve_table_name(table_name)
-        if target_table != primary_table or column_name not in schema.columns:
-            raise ProjectError(
-                f"Editable policy column {output_name!r} targets invalid path {target!r}"
-            )
-
-    for output_name, _reference in policy.references.items():
-        analyzed = available.get(output_name)
-        if analyzed is None:
-            raise ProjectError(f"Reference policy references missing output column {output_name!r}")
-        if analyzed.kind not in {"joined_lookup", "direct_base", "aliased_base"}:
-            raise ProjectError(
-                f"Reference policy column {output_name!r} must come from a concrete selected column"
-            )

@@ -1,3 +1,6 @@
+kind: table
+name: memberships
+path: memberships.csv
 table: memberships
 primary_key: [org_id, user_id]
 columns:

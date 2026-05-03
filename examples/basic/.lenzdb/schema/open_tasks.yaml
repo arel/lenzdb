@@ -1,0 +1,3 @@
+kind: lens
+name: open_tasks
+path: open_tasks.sql

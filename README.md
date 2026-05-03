@@ -41,7 +41,7 @@ lnz view tasks
 ```
 
 ```bash
-# 3) Define a lens (a saved SQL view)
+# 3) Define and register a lens (a saved SQL view)
 cat > open_tasks.sql <<EOF
 select
   t.id,
@@ -53,6 +53,7 @@ join projects p on p.id = t.project_id
 where t.status != 'done'
 EOF
 
+lnz add open_tasks.sql
 lnz view open_tasks
 ```
 
@@ -101,9 +102,9 @@ pip install lenzdb
 
 * **Tables** → CSV files (`tasks.csv`)
 * **Lenses** → SQL views (`open_tasks.sql`)
-* **`lnz add`** → register a source table with LenzDB 
-* **`lnz view`** → view a table or lens
-* **`lnz edit`** → modify a view; write changes back to source rows
+* **`lnz add`** → register a table or lens with a manifest in `.lenzdb/schema/`
+* **`lnz view`** → view a table or lens, even before it is registered
+* **`lnz edit`** → modify a table or lens; untracked resources are promoted on demand
 
 ---
 
@@ -153,7 +154,6 @@ my-project/
 
   .lenzdb/
     schema/
-    policies/
 ```
 
 You can ignore `.lenzdb/` entirely to start.
@@ -163,7 +163,8 @@ You can ignore `.lenzdb/` entirely to start.
 ## Notes
 
 * CSV files are the source of truth
-* Lenses are just SQL files
+* Manifests in `.lenzdb/schema/` register tracked tables and lenses
+* Resource names are literal, so dots in filenames are part of the name
 * Edits are validated before writeback
 * Writable views infer safe insert defaults from exact equality filters like `where status = 'doing'`
 * `--page-size` and `$LENZDB_PAGE_SIZE > 0` turn on pagination and start at page 1 by default

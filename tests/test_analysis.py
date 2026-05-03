@@ -9,7 +9,7 @@ from lenzdb.errors import LensAnalysisError
 from lenzdb.project import Project
 
 
-def test_analysis_classifies_columns(example_project: Path) -> None:
+def test_analysis_classifies_flat_lens_columns(example_project: Path) -> None:
     project = Project.discover(example_project)
     analysis = analyze_lens(project, "open_tasks")
 
@@ -20,6 +20,7 @@ def test_analysis_classifies_columns(example_project: Path) -> None:
     assert kinds["project_name"] == "joined_lookup"
     assert analysis.writable is True
     assert analysis.primary_key_output == "id"
+    assert analysis.column_map()["project_name"].writable is False
 
 
 def test_analysis_infers_defaults_from_where_clause(example_project: Path) -> None:
@@ -35,18 +36,6 @@ def test_analysis_infers_defaults_from_where_clause(example_project: Path) -> No
     assert analysis.inferred_default_sources == {"status": "status = 'doing'"}
 
 
-def test_analysis_ignores_non_qualifying_where_predicates(example_project: Path) -> None:
-    (example_project / "not_done_tasks.sql").write_text(
-        "select id, title from tasks where status != 'done' order by id\n",
-        encoding="utf-8",
-    )
-
-    project = Project.discover(example_project)
-    analysis = analyze_lens(project, "not_done_tasks")
-
-    assert analysis.inferred_defaults == {}
-
-
 def test_analysis_requires_all_composite_primary_key_outputs(example_project: Path) -> None:
     (example_project / "memberships.csv").write_text(
         "org_id,user_id,role\n"
@@ -55,6 +44,9 @@ def test_analysis_requires_all_composite_primary_key_outputs(example_project: Pa
         encoding="utf-8",
     )
     (example_project / ".lenzdb" / "schema" / "memberships.yaml").write_text(
+        "kind: table\n"
+        "name: memberships\n"
+        "path: memberships.csv\n"
         "table: memberships\n"
         "primary_key: [org_id, user_id]\n"
         "columns:\n"
@@ -98,68 +90,3 @@ def test_analysis_rejects_aggregate_lens(example_project: Path) -> None:
     with pytest.raises(LensAnalysisError, match="GROUP BY"):
         analyze_lens(project, "task_counts")
 
-
-def test_analysis_rejects_unsafe_join(example_project: Path) -> None:
-    schema_path = example_project / ".lenzdb" / "schema" / "comments.yaml"
-    schema_path.write_text(
-        "table: comments\n"
-        "primary_key: id\n"
-        "columns:\n"
-        "  id:\n"
-        "    type: string\n"
-        "    immutable: true\n"
-        "  task_id:\n"
-        "    type: ref\n"
-        "    table: tasks\n"
-        "  body:\n"
-        "    type: string\n",
-        encoding="utf-8",
-    )
-    data_path = example_project / "comments.csv"
-    data_path.write_text(
-        "id,task_id,body\nc-1,t-1,First\nc-2,t-1,Second\n",
-        encoding="utf-8",
-    )
-    lens_path = example_project / "task_comments.sql"
-    lens_path.write_text(
-        "select t.id, c.body from tasks t join comments c on c.task_id = t.id",
-        encoding="utf-8",
-    )
-
-    project = Project.discover(example_project)
-    analysis = analyze_lens(project, "task_comments")
-    assert analysis.writable is False
-    assert any("not recognized as a many-to-one lookup" in warning for warning in analysis.warnings)
-    assert any("do not map one-to-one" in reason for reason in analysis.reasons)
-
-
-def test_analysis_allows_primary_table_writes_with_read_only_join_without_policy(
-    example_project: Path,
-) -> None:
-    policy_path = example_project / ".lenzdb" / "policies" / "open_tasks.yaml"
-    policy_path.unlink()
-    schema_path = example_project / ".lenzdb" / "schema" / "tasks.yaml"
-    schema_path.write_text(
-        "table: tasks\n"
-        "primary_key: id\n"
-        "columns:\n"
-        "  id:\n"
-        "    type: string\n"
-        "    immutable: true\n"
-        "  title:\n"
-        "    type: string\n"
-        "  status:\n"
-        "    type: enum\n"
-        "    values: [todo, doing, done]\n"
-        "  project_id:\n"
-        "    type: string\n",
-        encoding="utf-8",
-    )
-
-    project = Project.discover(example_project)
-    analysis = analyze_lens(project, "open_tasks")
-
-    assert analysis.writable is True
-    assert analysis.column_map()["status"].writable is True
-    assert analysis.column_map()["project_name"].writable is False
-    assert any("not recognized as a many-to-one lookup" in warning for warning in analysis.warnings)

@@ -1,4 +1,4 @@
-"""Pydantic models for schemas and policies."""
+"""Pydantic models for schemas and lens metadata."""
 
 from __future__ import annotations
 
@@ -34,6 +34,9 @@ class ColumnSchema(BaseModel):
 
 
 class TableSchema(BaseModel):
+    kind: Literal["table"] = "table"
+    name: str | None = None
+    path: str | None = None
     table: str
     primary_key: str | list[str]
     columns: dict[str, ColumnSchema]
@@ -54,6 +57,10 @@ class TableSchema(BaseModel):
             raise ValueError(
                 f"primary_key column(s) {missing!r} are not defined in columns for table {self.table!r}"
             )
+        if self.name is not None and not self.name:
+            raise ValueError("table manifest name must not be empty")
+        if self.path is not None and not self.path:
+            raise ValueError("table manifest path must not be empty")
         return self
 
 
@@ -75,3 +82,17 @@ class LensPolicy(BaseModel):
     primary_key: str | list[str]
     editable: dict[str, str] = Field(default_factory=dict)
     references: dict[str, ReferencePolicy] = Field(default_factory=dict)
+
+
+class LensManifest(BaseModel):
+    kind: Literal["lens"] = "lens"
+    name: str
+    path: str
+
+    @model_validator(mode="after")
+    def validate_manifest(self) -> LensManifest:
+        if not self.name:
+            raise ValueError("lens manifest name must not be empty")
+        if not self.path:
+            raise ValueError("lens manifest path must not be empty")
+        return self

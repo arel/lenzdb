@@ -1,3 +1,6 @@
+kind: table
+name: tasks
+path: tasks.csv
 table: tasks
 primary_key: id
 columns:

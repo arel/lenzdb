@@ -23,14 +23,7 @@ from lenzdb.analysis import (
 )
 from lenzdb.engine import QueryResult, ResourceQuery, query_resource, query_resource_view
 from lenzdb.errors import MutationError
-from lenzdb.models import LensPolicy, ReferencePolicy
-from lenzdb.project import (
-    Project,
-    canonical_scalar,
-    parse_column_value,
-    parse_qualified_name,
-    serialize_value,
-)
+from lenzdb.project import Project, canonical_scalar, parse_column_value, serialize_value
 
 
 @dataclass(slots=True)
@@ -201,11 +194,7 @@ def snapshot_key_display(key: tuple[str, ...]) -> str:
 def resolve_target_column(
     project: Project,
     analyzed_column: AnalyzedColumn,
-    policy: LensPolicy | None,
 ) -> tuple[str, str] | None:
-    if policy and analyzed_column.output_name in policy.editable:
-        table_name, column_name = parse_qualified_name(policy.editable[analyzed_column.output_name])
-        return project.resolve_table_name(table_name), column_name
     if analyzed_column.source_table and analyzed_column.source_column:
         return analyzed_column.source_table, analyzed_column.source_column
     return None
@@ -214,56 +203,6 @@ def resolve_target_column(
 def parse_input_value(project: Project, table: str, column_name: str, raw_value: str) -> Any:
     column = project.schema_for(table).columns[column_name]
     return parse_column_value(raw_value, column, location=f"{table}.{column_name}")
-
-
-def find_reference_match(
-    project: Project,
-    rows_by_table: dict[str, list[dict[str, Any]]],
-    reference_policy: ReferencePolicy,
-    display_value: str,
-    reference_creations: list[TableInsert],
-) -> Any:
-    lookup_table = project.resolve_table_name(reference_policy.lookup.table)
-    lookup_schema = project.schema_for(lookup_table)
-    lookup_keys = project.primary_key_columns(lookup_table)
-    if len(lookup_keys) != 1:
-        raise MutationError(
-            f"Reference lookup table {lookup_table!r} has a composite primary key, which is not supported"
-        )
-    lookup_key = lookup_keys[0]
-    match_column = reference_policy.lookup.match
-
-    matches = [
-        row
-        for row in rows_by_table[lookup_table]
-        if serialize_value(row.get(match_column), lookup_schema.columns[match_column])
-        == display_value
-    ]
-    if len(matches) == 1:
-        return matches[0][lookup_key]
-    if len(matches) > 1:
-        raise MutationError(
-            f"Reference value {display_value!r} is ambiguous for {lookup_table}.{match_column}"
-        )
-    if not reference_policy.lookup.create_if_missing:
-        raise MutationError(
-            f"Reference value {display_value!r} does not exist in {lookup_table}.{match_column}"
-        )
-
-    new_row = project.blank_row(lookup_table)
-    primary_column = lookup_schema.columns[lookup_key]
-    if primary_column.type != "string":
-        raise MutationError(
-            f"Cannot create missing lookup rows for {lookup_table!r}: "
-            f"primary key {lookup_key!r} is not a string column"
-        )
-
-    new_key = project.generate_primary_key(lookup_table)
-    new_row[lookup_key] = new_key
-    new_row[match_column] = parse_input_value(project, lookup_table, match_column, display_value)
-    rows_by_table[lookup_table].append(new_row)
-    reference_creations.append(TableInsert(table=lookup_table, row=deepcopy(new_row)))
-    return new_row[lookup_key]
 
 
 def collect_row_changes(
@@ -276,7 +215,6 @@ def collect_row_changes(
     rows_by_table: dict[str, list[dict[str, Any]]],
     reference_creations: list[TableInsert],
 ) -> dict[str, Any]:
-    policy = project.policy_for(analysis.lens_name)
     column_map = analysis.column_map()
     primary_schema = project.schema_for(analysis.primary_table or "")
     changes: dict[str, Any] = {}
@@ -296,35 +234,15 @@ def collect_row_changes(
         analyzed_column = column_map[output_name]
         if analyzed_column.kind in {"computed", "aggregate", "wildcard"}:
             raise MutationError(f"Column {output_name!r} is not writable")
-        if analyzed_column.kind == "joined_lookup" and not (
-            policy and output_name in policy.references
-        ):
-            raise MutationError(
-                f"Joined lookup column {output_name!r} is not writable without a policy"
-            )
-        if not analyzed_column.writable and not (policy and output_name in policy.references):
+        if analyzed_column.kind == "joined_lookup":
+            raise MutationError(f"Joined lookup column {output_name!r} is not writable")
+        if not analyzed_column.writable:
             raise MutationError(f"Column {output_name!r} is not writable")
-
-        if policy and output_name in policy.references:
-            ref_policy = policy.references[output_name]
-            target_table, target_column = parse_qualified_name(ref_policy.write_to)
-            target_table = project.resolve_table_name(target_table)
-            if new_value == "":
-                parsed_value = None
-            else:
-                parsed_value = find_reference_match(
-                    project,
-                    rows_by_table,
-                    ref_policy,
-                    new_value,
-                    reference_creations,
-                )
-        else:
-            target = resolve_target_column(project, analyzed_column, policy)
-            if target is None:
-                raise MutationError(f"Column {output_name!r} does not map to a writable target")
-            target_table, target_column = target
-            parsed_value = parse_input_value(project, target_table, target_column, new_value)
+        target = resolve_target_column(project, analyzed_column)
+        if target is None:
+            raise MutationError(f"Column {output_name!r} does not map to a writable target")
+        target_table, target_column = target
+        parsed_value = parse_input_value(project, target_table, target_column, new_value)
 
         if target_table != analysis.primary_table:
             raise MutationError(
