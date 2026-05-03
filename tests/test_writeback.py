@@ -623,6 +623,7 @@ def test_edit_untracked_table_without_lenzdb_uses_temporary_schema(
     assert result.exit_code == 0
     assert "Changes applied." in result.stdout
     assert "Info: auto-added untracked table main.tasks with primary key 'id'." in result.stderr
+    assert "Info: using temporary schema" not in result.stderr
     assert (example_project / ".lenzdb" / "schema" / "main.tasks.yaml").exists()
     assert "Write docs without schema" in (example_project / "tasks.csv").read_text(
         encoding="utf-8"

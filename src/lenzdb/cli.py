@@ -299,6 +299,7 @@ def add_table_schema(project: Project, table_key: str, path: Path, primary_key: 
         table_key,
         document,
     )
+    project.schemas[table_key] = TableSchema.model_validate(document)
     registered = ensure_table_registered(project, table_key, path)
     return schema_path, registered
 
@@ -317,6 +318,7 @@ def add_table_schema_with_overrides(
         if column_name in document["columns"]:
             document["columns"][column_name].update(override)
     schema_path = write_schema_file(project, table_key, document)
+    project.schemas[table_key] = TableSchema.model_validate(document)
     registered = ensure_table_registered(project, table_key, path)
     return schema_path, registered
 
