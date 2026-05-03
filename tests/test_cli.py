@@ -86,7 +86,7 @@ def test_describe_table_shape(runner, example_project: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "| column | type | primary_key | writable |" in result.stdout
+    assert "| column | type | primary_key | editable |" in result.stdout
     assert "| id | VARCHAR | yes | no |" in result.stdout
     assert "| status | VARCHAR | no | yes |" in result.stdout
 
@@ -107,7 +107,7 @@ def test_describe_untracked_table_without_lenzdb_uses_temporary_schema(
     )
 
     assert result.exit_code == 0
-    assert "| column | type | primary_key | writable |" in result.stdout
+    assert "| column | type | primary_key | editable |" in result.stdout
     assert "| id | VARCHAR | yes | no |" in result.stdout
     assert "Info: using temporary schema for untracked table main.tasks" in result.stderr
 
@@ -145,7 +145,7 @@ def test_describe_lens_with_untracked_dependencies_keeps_notices_on_stderr(
     )
 
     assert result.exit_code == 0
-    assert "| column | type | primary_key | writable |" in result.stdout
+    assert "| column | type | primary_key | editable |" in result.stdout
     assert "Info: using temporary schema for untracked table main.tasks" in result.stderr
     assert "Info: using temporary schema for untracked table main.projects" in result.stderr
 

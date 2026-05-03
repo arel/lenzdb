@@ -250,6 +250,46 @@ def ensure_temporary_resource_schema(project: Project, resource_name: str) -> No
     stderr_echo(note)
 
 
+def ensure_editable_resource_table(project: Project, resource_name: str) -> bool:
+    try:
+        project.resolve_resource_name(resource_name)
+        return False
+    except LenzError:
+        pass
+
+    try:
+        table_name = project._resolve_resource_name(resource_name, project.table_paths, "table")
+    except LenzError:
+        return False
+
+    if table_name in project.schemas:
+        return False
+
+    path = project.table_paths.get(table_name)
+    if path is None:
+        raise LenzError(f"Unknown untracked CSV table {resource_name!r}; pass a CSV path instead")
+
+    header = read_csv_header(path)
+    if "id" not in header:
+        raise LenzError(
+            f"{resource_name} is an untracked table without a default primary key column 'id'. "
+            "Run lnz add <table> --primary-key <column> and retry."
+        )
+
+    try:
+        schema_path, registered = add_table_schema(project, table_name, path, ["id"])
+    except LenzError as exc:
+        raise LenzError(
+            f"Cannot auto-add untracked table {table_name!r} with default primary key 'id': {exc}"
+        ) from exc
+
+    stderr_echo(f"Info: auto-added untracked table {table_name} with primary key 'id'.")
+    stderr_echo(f"Info: wrote schema {relative_path(project, schema_path)}.")
+    if registered:
+        stderr_echo("Info: updated .lenzdb/project.yaml.")
+    return True
+
+
 def add_table_schema(project: Project, table_key: str, path: Path, primary_key: list[str]) -> tuple[Path, bool]:
     header = read_csv_header(path)
     validate_csv_primary_key(path, primary_key)
@@ -1292,9 +1332,10 @@ def edit(
         allow_incomplete=True,
     )
     add_current_dir_resources(project_instance)
+    auto_added_resource = ensure_editable_resource_table(project_instance, resource_name)
     ensure_temporary_resource_schema(project_instance, resource_name)
     ensure_editable_dependency_tables(project_instance, resource_name)
-    if referenced_lens_tables(project_instance, resource_name):
+    if auto_added_resource or referenced_lens_tables(project_instance, resource_name):
         project_instance = load_project(
             project,
             validate_configuration=False,
