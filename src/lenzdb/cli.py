@@ -594,19 +594,24 @@ def parse_page_size_env() -> int | None:
     try:
         parsed = int(value)
     except ValueError as exc:
-        raise LenzError(f"${PAGE_SIZE_ENV_VAR} must be a positive integer or -1") from exc
-    if parsed != -1 and parsed < 1:
-        raise LenzError(f"${PAGE_SIZE_ENV_VAR} must be a positive integer or -1")
+        raise LenzError(f"${PAGE_SIZE_ENV_VAR} must be an integer") from exc
     return parsed
 
 
-def resolve_page_size(project: Project, explicit_page_size: int | None) -> int | None:
+def resolve_page_size(
+    project: Project, explicit_page: int | None, explicit_page_size: int | None
+) -> tuple[int | None, int | None]:
     if explicit_page_size is not None:
-        return explicit_page_size
+        return explicit_page or 1, explicit_page_size
     env_page_size = parse_page_size_env()
     if env_page_size is not None:
-        return None if env_page_size == -1 else env_page_size
-    return project.view_page_size
+        if env_page_size > 0:
+            return explicit_page or 1, env_page_size
+        if explicit_page is None:
+            return None, None
+    if explicit_page is not None:
+        return explicit_page, project.view_page_size
+    return None, None
 
 
 def output_width() -> int:
@@ -702,17 +707,13 @@ def build_view_query(
         raise LenzError("--distinct cannot be combined with --columns")
     if page is not None and (limit is not None or offset is not None):
         raise LenzError("--page cannot be combined with --limit or --offset")
-    if page_size is not None and page is None:
-        raise LenzError("--page-size requires --page")
 
     effective_limit = limit
     effective_offset = offset
-    if page is not None:
-        effective_page_size = resolve_page_size(project, page_size)
-        if effective_page_size is None:
-            raise LenzError(f"--page requires --page-size when ${PAGE_SIZE_ENV_VAR}=-1")
+    effective_page, effective_page_size = resolve_page_size(project, page, page_size)
+    if effective_page is not None and effective_page_size is not None:
         effective_limit = effective_page_size
-        effective_offset = (page - 1) * effective_page_size
+        effective_offset = (effective_page - 1) * effective_page_size
 
     return ResourceQuery(
         columns=selected_columns,
@@ -999,11 +1000,20 @@ def view(
     ] = None,
     page: Annotated[
         int | None,
-        typer.Option("--page", help="One-based page number using the configured page size."),
+        typer.Option(
+            "--page",
+            help=(
+                "One-based page number using the configured page size. Defaults to page 1 "
+                "when pagination is enabled by --page-size or $LENZDB_PAGE_SIZE."
+            ),
+        ),
     ] = None,
     page_size: Annotated[
         int | None,
-        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+        typer.Option(
+            "--page-size",
+            help="Rows per page. Also enables pagination and defaults to page 1.",
+        ),
     ] = None,
     sql: Annotated[
         str | None,
@@ -1104,11 +1114,20 @@ def describe(
     ] = None,
     page: Annotated[
         int | None,
-        typer.Option("--page", help="One-based page number using the configured page size."),
+        typer.Option(
+            "--page",
+            help=(
+                "One-based page number using the configured page size. Defaults to page 1 "
+                "when pagination is enabled by --page-size or $LENZDB_PAGE_SIZE."
+            ),
+        ),
     ] = None,
     page_size: Annotated[
         int | None,
-        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+        typer.Option(
+            "--page-size",
+            help="Rows per page. Also enables pagination and defaults to page 1.",
+        ),
     ] = None,
     sql: Annotated[
         str | None,
@@ -1320,11 +1339,20 @@ def edit(
     ] = None,
     page: Annotated[
         int | None,
-        typer.Option("--page", help="One-based page number using the configured page size."),
+        typer.Option(
+            "--page",
+            help=(
+                "One-based page number using the configured page size. Defaults to page 1 "
+                "when pagination is enabled by --page-size or $LENZDB_PAGE_SIZE."
+            ),
+        ),
     ] = None,
     page_size: Annotated[
         int | None,
-        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+        typer.Option(
+            "--page-size",
+            help="Rows per page. Also enables pagination and defaults to page 1.",
+        ),
     ] = None,
     project: ProjectOption = None,
 ) -> None:

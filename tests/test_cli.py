@@ -397,21 +397,17 @@ def test_view_page_size_env_overrides_project_page_size(runner, example_project:
             "markdown",
             "--order",
             "id",
-            "--page",
-            "2",
         ],
         env={"LENZDB_PAGE_SIZE": "1"},
     )
 
     assert result.exit_code == 0
-    assert "Write getting started docs" in result.stdout
-    assert "Ship CLI skeleton" not in result.stdout
+    assert "Ship CLI skeleton" in result.stdout
+    assert "Write getting started docs" not in result.stdout
 
 
-def test_view_page_size_env_minus_one_requires_explicit_size(
-    runner, example_project: Path
-) -> None:
-    missing_size = runner.invoke(
+def test_view_page_size_env_zero_disables_pagination(runner, example_project: Path) -> None:
+    result = runner.invoke(
         app,
         [
             "view",
@@ -422,12 +418,17 @@ def test_view_page_size_env_minus_one_requires_explicit_size(
             "markdown",
             "--order",
             "id",
-            "--page",
-            "2",
         ],
-        env={"LENZDB_PAGE_SIZE": "-1"},
+        env={"LENZDB_PAGE_SIZE": "0"},
     )
-    explicit_size = runner.invoke(
+
+    assert result.exit_code == 0
+    assert "Ship CLI skeleton" in result.stdout
+    assert "Write getting started docs" in result.stdout
+
+
+def test_view_page_size_option_defaults_to_page_one(runner, example_project: Path) -> None:
+    result = runner.invoke(
         app,
         [
             "view",
@@ -438,18 +439,14 @@ def test_view_page_size_env_minus_one_requires_explicit_size(
             "markdown",
             "--order",
             "id",
-            "--page",
-            "2",
             "--page-size",
             "1",
         ],
-        env={"LENZDB_PAGE_SIZE": "-1"},
     )
 
-    assert missing_size.exit_code == 1
-    assert "--page requires --page-size when $LENZDB_PAGE_SIZE=-1" in missing_size.stderr
-    assert explicit_size.exit_code == 0
-    assert "Write getting started docs" in explicit_size.stdout
+    assert result.exit_code == 0
+    assert "Ship CLI skeleton" in result.stdout
+    assert "Write getting started docs" not in result.stdout
 
 
 def test_view_count_allows_filter(runner, example_project: Path) -> None:

@@ -166,6 +166,8 @@ You can ignore `.lenzdb/` entirely to start.
 * Lenses are just SQL files
 * Edits are validated before writeback
 * Writable views infer safe insert defaults from exact equality filters like `where status = 'doing'`
+* `--page-size` and `$LENZDB_PAGE_SIZE > 0` turn on pagination and start at page 1 by default
+* `$LENZDB_PAGE_SIZE <= 0` leaves pagination off unless you explicitly pass `--page-size` or `--page`
 * Keep your repo in Git for safety
 
 ---
