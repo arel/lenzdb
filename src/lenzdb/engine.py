@@ -302,10 +302,10 @@ def describe_resource_view(project: Project, resource_name: str, query: Resource
                 "column": column_name,
                 "type": row.get("column_type"),
                 "primary_key": "yes" if primary_key else "no",
-                "writable": "yes" if analyzed_column and analyzed_column.writable else "no",
+                "editable": "yes" if analyzed_column and analyzed_column.writable else "no",
             }
         )
-    return QueryResult(columns=["column", "type", "primary_key", "writable"], rows=rows)
+    return QueryResult(columns=["column", "type", "primary_key", "editable"], rows=rows)
 
 
 def query_table(
