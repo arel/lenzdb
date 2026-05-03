@@ -891,6 +891,18 @@ def test_check_and_explain(runner, example_project: Path) -> None:
     assert "project_name" in explain_result.stdout
 
 
+def test_explain_shows_inferred_defaults(runner, example_project: Path) -> None:
+    (example_project / "doing_tasks.sql").write_text(
+        "select id, title from tasks where status = 'doing' order by id\n",
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["explain", "doing_tasks", "--project", str(example_project)])
+    assert result.exit_code == 0
+    assert "Inferred defaults:" in result.stdout
+    assert "status = 'doing'" in result.stdout
+
+
 def test_diff_command(runner, example_project: Path, tmp_path: Path) -> None:
     edited = tmp_path / "edited.csv"
     edited.write_text(

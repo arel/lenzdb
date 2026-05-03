@@ -6,7 +6,8 @@ import pytest
 
 from lenzdb.cli import app
 from lenzdb.errors import MutationError
-from lenzdb.planner import apply_mutation_plan, build_mutation_plan
+from lenzdb.engine import ResourceQuery
+from lenzdb.planner import apply_mutation_plan, build_mutation_plan, build_mutation_plan_for_view
 from lenzdb.project import Project
 
 
@@ -69,6 +70,29 @@ def test_plan_inserts_and_creates_reference(example_project: Path, tmp_path: Pat
     new_task = plan.inserts[0].row
     assert new_task["title"] == "Add release checklist"
     assert new_task["status"] == "todo"
+
+
+def test_plan_applies_defaults_from_view_filters(example_project: Path, tmp_path: Path) -> None:
+    edited = tmp_path / "edited.csv"
+    edited.write_text(
+        "id,title\n"
+        "t-2,Write getting started docs\n"
+        ",Add release checklist\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    query = ResourceQuery(columns=["id", "title"], where="status = 'doing'")
+    plan = build_mutation_plan_for_view(project, "tasks", query, edited)
+
+    assert len(plan.inserts) == 1
+    assert plan.inserts[0].row["status"] == "doing"
+    assert plan.inferred_defaults == {"status": "doing"}
+
+    apply_mutation_plan(project, plan)
+    tasks_csv = (example_project / "tasks.csv").read_text(encoding="utf-8")
+    assert "Add release checklist" in tasks_csv
+    assert ",Add release checklist,doing," in tasks_csv
 
 
 def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> None:

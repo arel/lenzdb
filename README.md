@@ -163,6 +163,7 @@ You can ignore `.lenzdb/` entirely to start.
 * CSV files are the source of truth
 * Lenses are just SQL files
 * Edits are validated before writeback
+* Writable views infer safe insert defaults from exact equality filters like `where status = 'doing'`
 * Keep your repo in Git for safety
 
 ---

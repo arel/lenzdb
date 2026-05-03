@@ -15,7 +15,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from lenzdb.analysis import AnalyzedColumn, LensAnalysis, analyze_resource
+from lenzdb.analysis import (
+    AnalyzedColumn,
+    LensAnalysis,
+    analyze_resource,
+    infer_defaults_from_resource_where,
+)
 from lenzdb.engine import QueryResult, ResourceQuery, query_resource, query_resource_view
 from lenzdb.errors import MutationError
 from lenzdb.models import LensPolicy, ReferencePolicy
@@ -59,6 +64,8 @@ class MutationPlan:
     inserts: list[TableInsert]
     reference_creations: list[TableInsert]
     generated_primary_keys: list[str]
+    inferred_defaults: dict[str, str]
+    inferred_default_sources: dict[str, str]
     rows_by_table: dict[str, list[dict[str, Any]]] = field(repr=False)
     touched_tables: set[str] = field(repr=False)
 
@@ -338,6 +345,21 @@ def collect_row_changes(
     return changes
 
 
+def apply_inferred_defaults(
+    project: Project, analysis: LensAnalysis, row: dict[str, Any]
+) -> None:
+    if not analysis.inferred_defaults:
+        return
+    primary_schema = project.schema_for(analysis.primary_table or "")
+    for column_name, raw_value in analysis.inferred_defaults.items():
+        if row.get(column_name) is not None:
+            continue
+        column = primary_schema.columns.get(column_name)
+        if column is None:
+            continue
+        row[column_name] = parse_input_value(project, analysis.primary_table or "", column_name, raw_value)
+
+
 def ensure_writable_analysis(analysis: LensAnalysis, *, subject: str = "Resource") -> None:
     if not analysis.writable:
         raise MutationError(
@@ -348,7 +370,12 @@ def ensure_writable_analysis(analysis: LensAnalysis, *, subject: str = "Resource
         raise MutationError("Lens is missing primary table or primary key information")
 
 
-def analyze_resource_view(project: Project, resource_name: str, result_columns: list[str]) -> LensAnalysis:
+def analyze_resource_view(
+    project: Project,
+    resource_name: str,
+    result_columns: list[str],
+    query: ResourceQuery | None = None,
+) -> LensAnalysis:
     analysis = analyze_resource(project, resource_name)
     column_map = analysis.column_map()
     columns: list[AnalyzedColumn] = []
@@ -374,6 +401,18 @@ def analyze_resource_view(project: Project, resource_name: str, result_columns: 
         output_name for output_name in analysis.primary_key_outputs if output_name in result_columns
     ]
     writable = analysis.writable and not reasons and len(columns) == len(result_columns)
+
+    inferred_defaults = dict(analysis.inferred_defaults)
+    inferred_default_sources = dict(analysis.inferred_default_sources)
+    warnings = [*analysis.warnings, "dynamic edit view"]
+    if query is not None and query.where:
+        extra_defaults, extra_sources, extra_warnings = infer_defaults_from_resource_where(
+            project, analysis, query.where
+        )
+        for column_name, value in extra_defaults.items():
+            inferred_defaults[column_name] = value
+            inferred_default_sources[column_name] = extra_sources[column_name]
+        warnings.extend(extra_warnings)
     return LensAnalysis(
         lens_name=analysis.lens_name,
         primary_table=analysis.primary_table,
@@ -383,7 +422,9 @@ def analyze_resource_view(project: Project, resource_name: str, result_columns: 
         columns=columns,
         writable=writable,
         reasons=reasons,
-        warnings=[*analysis.warnings, "dynamic edit view"],
+        warnings=warnings,
+        inferred_defaults=inferred_defaults,
+        inferred_default_sources=inferred_default_sources,
     )
 
 
@@ -502,6 +543,7 @@ def build_mutation_plan_from_result(
             new_row[primary_key] = parse_input_value(
                 project, analysis.primary_table, primary_key, pk_value
             )
+        apply_inferred_defaults(project, analysis, new_row)
         changes = collect_row_changes(
             project=project,
             analysis=analysis,
@@ -533,6 +575,8 @@ def build_mutation_plan_from_result(
         inserts=inserts,
         reference_creations=reference_creations,
         generated_primary_keys=generated_primary_keys,
+        inferred_defaults=dict(analysis.inferred_defaults),
+        inferred_default_sources=dict(analysis.inferred_default_sources),
         rows_by_table=working_rows,
         touched_tables=touched_tables,
     )
@@ -553,7 +597,7 @@ def build_mutation_plan_for_view(
     edited_csv_path: str | Path,
 ) -> MutationPlan:
     result = query_resource_view(project, resource_name, query)
-    analysis = analyze_resource_view(project, resource_name, result.columns)
+    analysis = analyze_resource_view(project, resource_name, result.columns, query=query)
     return build_mutation_plan_from_result(
         project,
         analysis,
@@ -668,7 +712,7 @@ def edit_lens(
 ) -> EditResult:
     if query is not None:
         result = query_resource_view(project, resource_name, query)
-        analysis = analyze_resource_view(project, resource_name, result.columns)
+        analysis = analyze_resource_view(project, resource_name, result.columns, query=query)
         ensure_writable_analysis(analysis, subject="Dynamic edit view")
 
     with tempfile.TemporaryDirectory(prefix="lenzdb-") as temp_dir:

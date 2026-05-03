@@ -22,6 +22,31 @@ def test_analysis_classifies_columns(example_project: Path) -> None:
     assert analysis.primary_key_output == "id"
 
 
+def test_analysis_infers_defaults_from_where_clause(example_project: Path) -> None:
+    (example_project / "doing_tasks.sql").write_text(
+        "select id, title from tasks where status = 'doing' order by id\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    analysis = analyze_lens(project, "doing_tasks")
+
+    assert analysis.inferred_defaults == {"status": "doing"}
+    assert analysis.inferred_default_sources == {"status": "status = 'doing'"}
+
+
+def test_analysis_ignores_non_qualifying_where_predicates(example_project: Path) -> None:
+    (example_project / "not_done_tasks.sql").write_text(
+        "select id, title from tasks where status != 'done' order by id\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    analysis = analyze_lens(project, "not_done_tasks")
+
+    assert analysis.inferred_defaults == {}
+
+
 def test_analysis_requires_all_composite_primary_key_outputs(example_project: Path) -> None:
     (example_project / "memberships.csv").write_text(
         "org_id,user_id,role\n"
