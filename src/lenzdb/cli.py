@@ -33,14 +33,8 @@ from lenzdb.planner import (
     snapshot_rows,
 )
 from lenzdb.project import (
-    DEFAULT_NAMESPACE,
-    TABLES_CONFIG_KEY,
     Project,
     normalize_primary_key,
-    parse_qualified_name,
-    parse_namespaced_name,
-    resource_key,
-    split_resource_key,
 )
 from lenzdb.render import render_analysis, render_diff, render_plan, render_view
 
@@ -111,8 +105,12 @@ def complete_project_resource(incomplete: str) -> list[str]:
         project = load_project(None, validate_configuration=False)
     except LenzError:
         return []
-    names = {*project.lenses, *project.schemas}
-    names.update(split_resource_key(name)[1] for name in list(names))
+    names = {
+        *project.schemas,
+        *project.lenses,
+        *project.untracked_table_paths,
+        *project.untracked_lens_paths,
+    }
     return sorted(name for name in names if name.startswith(incomplete))
 
 
@@ -121,16 +119,8 @@ def complete_lens(incomplete: str) -> list[str]:
         project = load_project(None, validate_configuration=False)
     except LenzError:
         return []
-    names = set(project.lenses)
-    names.update(split_resource_key(name)[1] for name in list(names))
+    names = {*project.lenses, *project.untracked_lens_paths}
     return sorted(name for name in names if name.startswith(incomplete))
-
-
-def project_namespaces(project: Project) -> list[str]:
-    namespaces = {split_resource_key(key)[0] for key in project.schemas}
-    namespaces.update(split_resource_key(key)[0] for key in project.table_paths)
-    namespaces.update(split_resource_key(key)[0] for key in project.lenses)
-    return sorted(namespaces)
 
 
 def add_current_dir_resources(project: Project) -> None:
@@ -143,14 +133,20 @@ def add_current_dir_resources(project: Project) -> None:
         return
 
     for path in sorted(current_dir.glob("*.csv")):
-        namespace, name = parse_namespaced_name(path.stem)
-        key = resource_key(namespace, name)
-        project.table_paths.setdefault(key, path.resolve())
+        name = path.stem
+        if project.table_paths.get(name) == path.resolve():
+            continue
+        project.untracked_table_paths.setdefault(name, [])
+        if path.resolve() not in project.untracked_table_paths[name]:
+            project.untracked_table_paths[name].append(path.resolve())
 
     for path in sorted(current_dir.glob("*.sql")):
-        namespace, name = parse_namespaced_name(path.stem)
-        key = resource_key(namespace, name)
-        project.lenses.setdefault(key, path.resolve())
+        name = path.stem
+        if project.lenses.get(name) == path.resolve():
+            continue
+        project.untracked_lens_paths.setdefault(name, [])
+        if path.resolve() not in project.untracked_lens_paths[name]:
+            project.untracked_lens_paths[name].append(path.resolve())
 
 
 def stderr_echo(message: str) -> None:
@@ -176,17 +172,13 @@ def referenced_lens_tables(project: Project, resource_name: str) -> list[str]:
         if not table_expression.db and table_expression.name in cte_names:
             continue
         try:
-            table_name = project.resolve_table_name(table_expression.name, table_expression.db or None)
+            table_name = project.resolve_table_name(
+                f"{table_expression.db}.{table_expression.name}"
+                if table_expression.db
+                else table_expression.name
+            )
         except LenzError:
-            try:
-                table_name = project._resolve_resource_name(
-                    table_expression.name,
-                    project.table_paths,
-                    "table",
-                    table_expression.db or None,
-                )
-            except LenzError as inner_exc:
-                raise inner_exc
+            raise
         if table_name not in seen:
             seen.add(table_name)
             tables.append(table_name)
@@ -194,9 +186,7 @@ def referenced_lens_tables(project: Project, resource_name: str) -> list[str]:
 
 
 def temporary_schema_for_table(project: Project, table_key: str) -> tuple[TableSchema, str]:
-    path = project.table_paths.get(table_key)
-    if path is None:
-        raise LenzError(f"Unknown untracked CSV table {table_key!r}")
+    path = project.table_path(table_key)
     header = read_csv_header(path)
     if "id" in header:
         primary_key = "id"
@@ -207,10 +197,11 @@ def temporary_schema_for_table(project: Project, table_key: str) -> tuple[TableS
             f"Warning: using temporary schema for untracked table {table_key} with inferred "
             f"primary key {primary_key!r} from the first column."
         )
-    namespace, name = split_resource_key(table_key)
-    table_name = name if namespace == DEFAULT_NAMESPACE else table_key
     schema = TableSchema(
-        table=table_name,
+        kind="table",
+        name=table_key,
+        path=relative_path(project, path),
+        table=table_key,
         primary_key=primary_key,
         columns={
             column: ColumnSchema(type="string", immutable=(column == primary_key))
@@ -224,8 +215,6 @@ def ensure_temporary_dependency_schemas(project: Project, resource_name: str) ->
     for table_name in referenced_lens_tables(project, resource_name):
         if table_name in project.schemas:
             continue
-        if table_name not in project.table_paths:
-            raise LenzError(f"Lens {resource_name!r} depends on missing table {table_name!r}")
         schema, note = temporary_schema_for_table(project, table_name)
         project.schemas[table_name] = schema
         stderr_echo(note)
@@ -233,13 +222,20 @@ def ensure_temporary_dependency_schemas(project: Project, resource_name: str) ->
 
 def ensure_temporary_resource_schema(project: Project, resource_name: str) -> None:
     try:
-        project.resolve_resource_name(resource_name)
+        resource_kind, resolved_name = project.resolve_resource_name(resource_name)
+        if resource_kind == "lens":
+            return
+        if resolved_name in project.schemas:
+            return
+        schema, note = temporary_schema_for_table(project, resolved_name)
+        project.schemas[resolved_name] = schema
+        stderr_echo(note)
         return
     except LenzError:
         pass
 
     try:
-        table_name = project._resolve_resource_name(resource_name, project.table_paths, "table")
+        table_name = project.resolve_table_name(resource_name)
     except LenzError:
         return
 
@@ -252,147 +248,63 @@ def ensure_temporary_resource_schema(project: Project, resource_name: str) -> No
 
 def ensure_editable_resource_table(project: Project, resource_name: str) -> bool:
     try:
-        project.resolve_resource_name(resource_name)
-        return False
-    except LenzError:
-        pass
-
-    try:
-        table_name = project._resolve_resource_name(resource_name, project.table_paths, "table")
+        resource_kind, resolved_name = project.resolve_resource_name(resource_name)
     except LenzError:
         return False
 
-    if table_name in project.schemas:
+    if resource_kind == "lens":
+        if resolved_name in project.lenses:
+            return False
+        path = project.lens_path(resolved_name)
+        manifest_path = write_manifest_file(
+            project,
+            resolved_name,
+            {
+                "kind": "lens",
+                "name": resolved_name,
+                "path": relative_path(project, path),
+            },
+        )
+        project.lenses[resolved_name] = path
+        stderr_echo(f"Info: auto-added untracked lens {resolved_name}.")
+        stderr_echo(f"Info: wrote manifest {relative_path(project, manifest_path)}.")
+        return True
+
+    if resolved_name in project.schemas:
         return False
 
-    path = project.table_paths.get(table_name)
-    if path is None:
-        raise LenzError(f"Unknown untracked CSV table {resource_name!r}; pass a CSV path instead")
-
+    path = project.table_path(resolved_name)
     header = read_csv_header(path)
     if "id" not in header:
         raise LenzError(
             f"{resource_name} is an untracked table without a default primary key column 'id'. "
             "Run lnz add <table> --primary-key <column> and retry."
         )
-
-    try:
-        schema_path, registered = add_table_schema(project, table_name, path, ["id"])
-    except LenzError as exc:
-        raise LenzError(
-            f"Cannot auto-add untracked table {table_name!r} with default primary key 'id': {exc}"
-        ) from exc
-
-    stderr_echo(f"Info: auto-added untracked table {table_name} with primary key 'id'.")
-    stderr_echo(f"Info: wrote schema {relative_path(project, schema_path)}.")
-    if registered:
-        stderr_echo("Info: updated .lenzdb/project.yaml.")
+    manifest_path = write_table_manifest(project, resolved_name, path, ["id"])
+    stderr_echo(f"Info: auto-added untracked table {resolved_name} with primary key 'id'.")
+    stderr_echo(f"Info: wrote manifest {relative_path(project, manifest_path)}.")
     return True
 
 
-def add_table_schema(project: Project, table_key: str, path: Path, primary_key: list[str]) -> tuple[Path, bool]:
-    header = read_csv_header(path)
-    validate_csv_primary_key(path, primary_key)
-    document = schema_document(table_key, primary_key, header)
-    schema_path = write_schema_file(
-        project,
-        table_key,
-        document,
-    )
-    project.schemas[table_key] = TableSchema.model_validate(document)
-    registered = ensure_table_registered(project, table_key, path)
-    return schema_path, registered
-
-
-def add_table_schema_with_overrides(
-    project: Project,
-    table_key: str,
-    path: Path,
-    primary_key: list[str],
-    column_overrides: dict[str, dict[str, object]],
-) -> tuple[Path, bool]:
-    header = read_csv_header(path)
-    validate_csv_primary_key(path, primary_key)
-    document = schema_document(table_key, primary_key, header)
-    for column_name, override in column_overrides.items():
-        if column_name in document["columns"]:
-            document["columns"][column_name].update(override)
-    schema_path = write_schema_file(project, table_key, document)
-    project.schemas[table_key] = TableSchema.model_validate(document)
-    registered = ensure_table_registered(project, table_key, path)
-    return schema_path, registered
-
-
-def inferred_auto_add_column_overrides(
-    project: Project, resource_name: str, table_key: str
-) -> dict[str, dict[str, object]]:
-    overrides: dict[str, dict[str, object]] = {}
-    policy = project.policy_for(resource_name)
-    if policy is None:
-        return overrides
-    try:
-        primary_table = project._resolve_resource_name(
-            policy.primary_table,
-            project.table_paths,
-            "table",
-        )
-    except LenzError:
-        return overrides
-    if primary_table != table_key:
-        return overrides
-
-    for reference_policy in policy.references.values():
-        write_table, write_column = parse_qualified_name(reference_policy.write_to)
-        try:
-            resolved_table = project._resolve_resource_name(
-                write_table,
-                project.table_paths,
-                "table",
-            )
-            lookup_table = project._resolve_resource_name(
-                reference_policy.lookup.table,
-                project.table_paths,
-                "table",
-            )
-        except LenzError:
-            continue
-        if resolved_table != table_key:
-            continue
-        overrides[write_column] = {"type": "ref", "table": lookup_table}
-    return overrides
-
-
 def ensure_editable_dependency_tables(project: Project, resource_name: str) -> None:
-    added_tables: list[str] = []
     blocked_tables: list[str] = []
 
     for table_name in referenced_lens_tables(project, resource_name):
         if table_name in project.schemas:
             continue
-        path = project.table_paths.get(table_name)
-        if path is None:
-            raise LenzError(f"Lens {resource_name!r} depends on missing table {table_name!r}")
+        path = project.table_path(table_name)
         header = read_csv_header(path)
         if "id" not in header:
             blocked_tables.append(table_name)
             continue
         try:
-            schema_path, registered = add_table_schema_with_overrides(
-                project,
-                table_name,
-                path,
-                ["id"],
-                inferred_auto_add_column_overrides(project, resource_name, table_name),
-            )
+            schema_path = write_table_manifest(project, table_name, path, ["id"])
         except LenzError as exc:
             raise LenzError(
                 f"Cannot auto-add untracked table {table_name!r} with default primary key 'id': {exc}"
             ) from exc
-        added_tables.append(table_name)
         stderr_echo(f"Info: auto-added untracked table {table_name} with primary key 'id'.")
-        stderr_echo(f"Info: wrote schema {relative_path(project, schema_path)}.")
-        if registered:
-            stderr_echo("Info: updated .lenzdb/project.yaml.")
+        stderr_echo(f"Info: wrote manifest {relative_path(project, schema_path)}.")
 
     if blocked_tables:
         blocked = ", ".join(blocked_tables)
@@ -411,15 +323,22 @@ def relative_path(project: Project, path: Path | None) -> str:
         return str(path)
 
 
-def state_for_namespace(project: Project, namespace: str) -> str:
-    has_table = any(split_resource_key(key)[0] == namespace for key in project.schemas)
-    has_table_path = any(split_resource_key(key)[0] == namespace for key in project.table_paths)
-    has_lens = any(split_resource_key(key)[0] == namespace for key in project.lenses)
-    return "added" if has_table or has_table_path or has_lens else "missing"
+def table_row_state(project: Project, name: str, path: Path, index: int) -> str:
+    if name in project.schemas:
+        tracked = project.table_paths.get(name)
+        return "added" if tracked == path else "shadowed"
+    return "untracked" if index == 0 else "duplicate"
+
+
+def lens_row_state(project: Project, name: str, path: Path, index: int) -> str:
+    if name in project.lenses:
+        tracked = project.lenses.get(name)
+        return "added" if tracked == path else "shadowed"
+    return "untracked" if index == 0 else "duplicate"
 
 
 def header_error_for_table(project: Project, table_name: str) -> str | None:
-    if table_name not in project.schemas or table_name not in project.table_paths:
+    if table_name not in project.schemas:
         return None
     schema = project.schema_for(table_name)
     path = project.table_path(table_name)
@@ -438,21 +357,11 @@ def header_error_for_table(project: Project, table_name: str) -> str | None:
 
 
 def state_for_table(project: Project, table_name: str) -> str:
-    has_schema = table_name in project.schemas
-    path = project.table_paths.get(table_name)
-    has_csv = path is not None
-    has_existing_csv = path is not None and path.exists()
-    if has_schema and has_existing_csv:
+    if table_name in project.schemas:
         return "error" if header_error_for_table(project, table_name) else "added"
-    if has_schema:
-        return "missing"
-    if has_csv and not has_existing_csv:
-        return "missing"
-    return "untracked"
-
-
-def check_for_namespace(project: Project, namespace: str) -> str:
-    return "ok" if state_for_namespace(project, namespace) == "added" else "missing"
+    if table_name in project.untracked_table_paths:
+        return "untracked"
+    return "missing"
 
 
 def check_for_table(project: Project, table_name: str) -> str:
@@ -484,13 +393,16 @@ def check_for_table(project: Project, table_name: str) -> str:
 
 
 def state_for_lens(project: Project, lens_name: str) -> str:
-    path = project.lenses.get(lens_name)
-    return "added" if path is not None and path.exists() else "missing"
+    if lens_name in project.lenses:
+        return "added"
+    if lens_name in project.untracked_lens_paths:
+        return "untracked"
+    return "missing"
 
 
 def check_for_lens(project: Project, lens_name: str) -> str:
     if state_for_lens(project, lens_name) != "added":
-        return "missing"
+        return state_for_lens(project, lens_name)
     try:
         analyze_lens(project, lens_name)
         query_lens(project, lens_name)
@@ -501,44 +413,77 @@ def check_for_lens(project: Project, lens_name: str) -> str:
 
 def build_list_rows(project: Project, check: bool) -> list[dict[str, str]]:
     rows: list[dict[str, str]] = []
-    for namespace in project_namespaces(project):
-        row = {
-            "kind": "namespace",
-            "namespace": namespace,
-            "name": namespace,
-            "path": "",
-            "state": state_for_namespace(project, namespace),
-        }
-        if check:
-            row["check"] = check_for_namespace(project, namespace)
-        rows.append(row)
-
-    for table_name in sorted(set(project.schemas) | set(project.table_paths)):
-        path = project.table_paths.get(table_name)
-        namespace, name = split_resource_key(table_name)
+    for name, path in sorted(project.table_paths.items()):
         row = {
             "kind": "table",
-            "namespace": namespace,
             "name": name,
             "path": relative_path(project, path),
-            "state": state_for_table(project, table_name),
+            "state": "added",
         }
         if check:
-            row["check"] = check_for_table(project, table_name)
+            row["check"] = check_for_table(project, name)
         rows.append(row)
 
-    for lens_name, path in sorted(project.lenses.items()):
-        namespace, name = split_resource_key(lens_name)
+        for index, untracked_path in enumerate(project.untracked_table_paths.get(name, [])):
+            rows.append(
+                {
+                    "kind": "table",
+                    "name": name,
+                    "path": relative_path(project, untracked_path),
+                    "state": "shadowed" if index == 0 else "duplicate",
+                    **({"check": "shadowed"} if check else {}),
+                }
+            )
+
+    for name, paths in sorted(project.untracked_table_paths.items()):
+        if name in project.table_paths:
+            continue
+        for index, path in enumerate(paths):
+            row = {
+                "kind": "table",
+                "name": name,
+                "path": relative_path(project, path),
+                "state": "untracked" if index == 0 else "duplicate",
+            }
+            if check:
+                row["check"] = check_for_table(project, name)
+            rows.append(row)
+
+    for name, path in sorted(project.lenses.items()):
         row = {
             "kind": "lens",
-            "namespace": namespace,
             "name": name,
             "path": relative_path(project, path),
-            "state": state_for_lens(project, lens_name),
+            "state": "added",
         }
         if check:
-            row["check"] = check_for_lens(project, lens_name)
+            row["check"] = check_for_lens(project, name)
         rows.append(row)
+
+        for index, untracked_path in enumerate(project.untracked_lens_paths.get(name, [])):
+            rows.append(
+                {
+                    "kind": "lens",
+                    "name": name,
+                    "path": relative_path(project, untracked_path),
+                    "state": "shadowed" if index == 0 else "duplicate",
+                    **({"check": "shadowed"} if check else {}),
+                }
+            )
+
+    for name, paths in sorted(project.untracked_lens_paths.items()):
+        if name in project.lenses:
+            continue
+        for index, path in enumerate(paths):
+            row = {
+                "kind": "lens",
+                "name": name,
+                "path": relative_path(project, path),
+                "state": "untracked" if index == 0 else "duplicate",
+            }
+            if check:
+                row["check"] = check_for_lens(project, name)
+            rows.append(row)
     return rows
 
 
@@ -594,19 +539,24 @@ def parse_page_size_env() -> int | None:
     try:
         parsed = int(value)
     except ValueError as exc:
-        raise LenzError(f"${PAGE_SIZE_ENV_VAR} must be a positive integer or -1") from exc
-    if parsed != -1 and parsed < 1:
-        raise LenzError(f"${PAGE_SIZE_ENV_VAR} must be a positive integer or -1")
+        raise LenzError(f"${PAGE_SIZE_ENV_VAR} must be an integer") from exc
     return parsed
 
 
-def resolve_page_size(project: Project, explicit_page_size: int | None) -> int | None:
+def resolve_page_size(
+    project: Project, explicit_page: int | None, explicit_page_size: int | None
+) -> tuple[int | None, int | None]:
     if explicit_page_size is not None:
-        return explicit_page_size
+        return explicit_page or 1, explicit_page_size
     env_page_size = parse_page_size_env()
     if env_page_size is not None:
-        return None if env_page_size == -1 else env_page_size
-    return project.view_page_size
+        if env_page_size > 0:
+            return explicit_page or 1, env_page_size
+        if explicit_page is None:
+            return None, None
+    if explicit_page is not None:
+        return explicit_page, project.view_page_size
+    return None, None
 
 
 def output_width() -> int:
@@ -702,17 +652,13 @@ def build_view_query(
         raise LenzError("--distinct cannot be combined with --columns")
     if page is not None and (limit is not None or offset is not None):
         raise LenzError("--page cannot be combined with --limit or --offset")
-    if page_size is not None and page is None:
-        raise LenzError("--page-size requires --page")
 
     effective_limit = limit
     effective_offset = offset
-    if page is not None:
-        effective_page_size = resolve_page_size(project, page_size)
-        if effective_page_size is None:
-            raise LenzError(f"--page requires --page-size when ${PAGE_SIZE_ENV_VAR}=-1")
+    effective_page, effective_page_size = resolve_page_size(project, page, page_size)
+    if effective_page is not None and effective_page_size is not None:
         effective_limit = effective_page_size
-        effective_offset = (page - 1) * effective_page_size
+        effective_offset = (effective_page - 1) * effective_page_size
 
     return ResourceQuery(
         columns=selected_columns,
@@ -803,99 +749,69 @@ def project_relative_path(project: Project, path: Path) -> str:
         raise LenzError(f"CSV path must be inside the project root: {path}") from exc
 
 
-def is_auto_discovered_table_path(project: Project, path: Path) -> bool:
-    resolved = path.resolve()
-    return (
-        resolved.parent == project.root
-        or resolved.parent == project.root / ".lenzdb" / "data"
-    )
-
-
-def resolve_add_csv(project: Project, target: str) -> tuple[str, Path]:
-    target_path = Path(target)
-    if target_path.suffix == ".csv" or target_path.exists():
-        if target_path.is_absolute():
-            path = target_path.resolve()
-        else:
-            cwd_path = (Path.cwd() / target_path).resolve()
-            project_path = (project.root / target_path).resolve()
-            path = cwd_path
-            if not path.exists() and project_path != cwd_path:
-                path = project_path
-        if not path.exists():
-            raise LenzError(f"CSV file does not exist: {path}")
-        if not path.is_file() or path.suffix != ".csv":
-            raise LenzError(f"Path must point to a .csv file: {path}")
-        project_relative_path(project, path)
-        namespace, name = parse_namespaced_name(path.stem)
-        return resource_key(namespace, name), path
-
-    namespace, name = parse_namespaced_name(target)
-    table_key = resource_key(namespace, name)
-    path = project.table_paths.get(table_key)
-    if path is None:
-        raise LenzError(f"Unknown untracked CSV table {target!r}; pass a CSV path instead")
-    return table_key, path
-
-
-def schema_document(table_key: str, primary_key: list[str], header: list[str]) -> dict[str, object]:
-    namespace, name = split_resource_key(table_key)
-    table_name = name if namespace == DEFAULT_NAMESPACE else table_key
-    primary_key_value: str | list[str] = primary_key[0] if len(primary_key) == 1 else primary_key
-    return {
-        "table": table_name,
-        "primary_key": primary_key_value,
-        "columns": {
-            column: {"type": "string", **({"immutable": True} if column in primary_key else {})}
-            for column in header
-        },
-    }
-
-
-def write_schema_file(project: Project, table_key: str, document: dict[str, object]) -> Path:
-    path = project.schema_dir / f"{table_key}.yaml"
+def write_manifest_file(project: Project, name: str, document: dict[str, object]) -> Path:
+    path = project.schema_dir / f"{name}.yaml"
     if path.exists():
-        raise LenzError(f"Schema file already exists: {path}")
+        raise LenzError(f"Manifest file already exists: {path}")
     project.schema_dir.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(document, handle, sort_keys=False)
     return path
 
 
-def ensure_table_registered(project: Project, table_key: str, path: Path) -> bool:
-    if is_auto_discovered_table_path(project, path):
-        return False
-    config_path = project.root / ".lenzdb" / "project.yaml"
-    if config_path.exists():
-        config = Project._load_yaml(config_path)
-        if not isinstance(config, dict):
-            raise LenzError(f"Project config must be a mapping: {config_path}")
-    else:
-        config = {}
-    tables = config.setdefault(TABLES_CONFIG_KEY, [])
-    if not isinstance(tables, list):
-        raise LenzError(f"Project config field {TABLES_CONFIG_KEY!r} must be a list")
+def write_table_manifest(project: Project, name: str, path: Path, primary_key: list[str]) -> Path:
+    header = read_csv_header(path)
+    validate_csv_primary_key(path, primary_key)
+    document = {
+        "kind": "table",
+        "name": name,
+        "path": project_relative_path(project, path),
+        "table": name,
+        "primary_key": primary_key[0] if len(primary_key) == 1 else primary_key,
+        "columns": {
+            column: {"type": "string", **({"immutable": True} if column in primary_key else {})}
+            for column in header
+        },
+    }
+    manifest_path = write_manifest_file(project, name, document)
+    project.schemas[name] = TableSchema.model_validate(document)
+    project.table_paths[name] = path.resolve()
+    return manifest_path
 
-    relative = project_relative_path(project, path)
-    namespace, name = split_resource_key(table_key)
-    entry: dict[str, str] = {"path": relative}
-    path_namespace, path_name = parse_namespaced_name(path.stem)
-    if namespace != path_namespace:
-        entry["namespace"] = namespace
-    if name != path_name:
-        entry["name"] = name
 
-    for existing in tables:
-        if isinstance(existing, dict) and existing.get("path") == relative:
-            existing.update(entry)
-            break
-    else:
-        tables.append(entry)
+def write_lens_manifest(project: Project, name: str, path: Path) -> Path:
+    document = {
+        "kind": "lens",
+        "name": name,
+        "path": project_relative_path(project, path),
+    }
+    manifest_path = write_manifest_file(project, name, document)
+    project.lenses[name] = path.resolve()
+    return manifest_path
 
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    with config_path.open("w", encoding="utf-8") as handle:
-        yaml.safe_dump(config, handle, sort_keys=False)
-    return True
+
+def resolve_add_resource(project: Project, target: str) -> tuple[str, str, Path]:
+    target_path = Path(target)
+    if target_path.suffix in {".csv", ".sql"} or target_path.exists():
+        if target_path.is_absolute():
+            path = target_path.resolve()
+        else:
+            cwd_path = (Path.cwd() / target_path).resolve()
+            project_path = (project.root / target_path).resolve()
+            path = cwd_path if cwd_path.exists() else project_path
+        if not path.exists():
+            raise LenzError(f"Resource file does not exist: {path}")
+        if not path.is_file() or path.suffix not in {".csv", ".sql"}:
+            raise LenzError(f"Path must point to a .csv or .sql file: {path}")
+        return ("table" if path.suffix == ".csv" else "lens"), path.stem, path
+
+    if target in project.schemas or target in project.table_paths:
+        return "table", target, project.table_path(target)
+    if target in project.lenses or target in project.untracked_lens_paths:
+        return "lens", target, project.lens_path(target)
+    if target in project.untracked_table_paths:
+        return "table", target, project.table_path(target)
+    raise LenzError(f"Unknown untracked resource {target!r}; pass a file path instead")
 
 
 @app.command()
@@ -903,7 +819,7 @@ def ensure_table_registered(project: Project, table_key: str, path: Path) -> boo
 def add(
     target: Annotated[
         str,
-        typer.Argument(help="Untracked table name or path to a CSV file to add."),
+        typer.Argument(help="Untracked resource name or path to a CSV/SQL file to add."),
     ],
     primary_key: Annotated[
         str | None,
@@ -921,20 +837,24 @@ def add(
         allow_incomplete=True,
     )
     add_current_dir_resources(project_instance)
-    table_key, path = resolve_add_csv(project_instance, target)
-    if table_key in project_instance.schemas:
-        raise LenzError(f"Table {table_key!r} already has a schema")
+    kind, name, path = resolve_add_resource(project_instance, target)
+    if kind == "table":
+        if name in project_instance.schemas:
+            raise LenzError(f"Table {name!r} already has a manifest")
+        header = read_csv_header(path)
+        selected_primary_key = choose_primary_key(header, primary_key)
+        manifest_path = write_table_manifest(project_instance, name, path, selected_primary_key)
+        typer.echo(f"Added table {name}")
+        typer.echo(f"Manifest: {relative_path(project_instance, manifest_path)}")
+        return
 
-    header = read_csv_header(path)
-    selected_primary_key = choose_primary_key(header, primary_key)
-    schema_path, registered = add_table_schema(
-        project_instance, table_key, path, selected_primary_key
-    )
-
-    typer.echo(f"Added table {table_key}")
-    typer.echo(f"Schema: {relative_path(project_instance, schema_path)}")
-    if registered:
-        typer.echo("Updated: .lenzdb/project.yaml")
+    if name in project_instance.lenses:
+        raise LenzError(f"Lens {name!r} already has a manifest")
+    if primary_key is not None:
+        raise LenzError("--primary-key is only valid for CSV tables")
+    manifest_path = write_lens_manifest(project_instance, name, path)
+    typer.echo(f"Added lens {name}")
+    typer.echo(f"Manifest: {relative_path(project_instance, manifest_path)}")
 
 
 @app.command()
@@ -999,11 +919,20 @@ def view(
     ] = None,
     page: Annotated[
         int | None,
-        typer.Option("--page", help="One-based page number using the configured page size."),
+        typer.Option(
+            "--page",
+            help=(
+                "One-based page number using the configured page size. Defaults to page 1 "
+                "when pagination is enabled by --page-size or $LENZDB_PAGE_SIZE."
+            ),
+        ),
     ] = None,
     page_size: Annotated[
         int | None,
-        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+        typer.Option(
+            "--page-size",
+            help="Rows per page. Also enables pagination and defaults to page 1.",
+        ),
     ] = None,
     sql: Annotated[
         str | None,
@@ -1104,11 +1033,20 @@ def describe(
     ] = None,
     page: Annotated[
         int | None,
-        typer.Option("--page", help="One-based page number using the configured page size."),
+        typer.Option(
+            "--page",
+            help=(
+                "One-based page number using the configured page size. Defaults to page 1 "
+                "when pagination is enabled by --page-size or $LENZDB_PAGE_SIZE."
+            ),
+        ),
     ] = None,
     page_size: Annotated[
         int | None,
-        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+        typer.Option(
+            "--page-size",
+            help="Rows per page. Also enables pagination and defaults to page 1.",
+        ),
     ] = None,
     sql: Annotated[
         str | None,
@@ -1191,7 +1129,7 @@ def list_resources(
         allow_incomplete=True,
     )
     add_current_dir_resources(project_instance)
-    columns = ["kind", "namespace", "name", "path", "state"]
+    columns = ["kind", "name", "path", "state"]
     if check:
         columns.append("check")
     rows = build_list_rows(project_instance, check)
@@ -1320,11 +1258,20 @@ def edit(
     ] = None,
     page: Annotated[
         int | None,
-        typer.Option("--page", help="One-based page number using the configured page size."),
+        typer.Option(
+            "--page",
+            help=(
+                "One-based page number using the configured page size. Defaults to page 1 "
+                "when pagination is enabled by --page-size or $LENZDB_PAGE_SIZE."
+            ),
+        ),
     ] = None,
     page_size: Annotated[
         int | None,
-        typer.Option("--page-size", help="Rows per page. Defaults to project view.page_size."),
+        typer.Option(
+            "--page-size",
+            help="Rows per page. Also enables pagination and defaults to page 1.",
+        ),
     ] = None,
     project: ProjectOption = None,
 ) -> None:

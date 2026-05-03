@@ -1,3 +1,6 @@
+kind: table
+name: projects
+path: projects.csv
 table: projects
 primary_key: id
 columns:

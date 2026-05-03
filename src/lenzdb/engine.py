@@ -11,7 +11,7 @@ from sqlglot import exp, parse_one
 from sqlglot.errors import ParseError
 
 from lenzdb.errors import ProjectError
-from lenzdb.project import Project, normalize_primary_key, split_resource_key
+from lenzdb.project import Project
 
 
 def quote_identifier(identifier: str) -> str:
@@ -56,10 +56,7 @@ def build_connection(
     connection = duckdb.connect(database=":memory:")
 
     for table_name, schema in project.schemas.items():
-        namespace, local_name = split_resource_key(table_name)
-        if namespace != "main":
-            connection.execute(f"CREATE SCHEMA IF NOT EXISTS {quote_identifier(namespace)}")
-        qualified_table_name = f"{quote_identifier(namespace)}.{quote_identifier(local_name)}"
+        qualified_table_name = quote_identifier(table_name)
         columns_sql = ", ".join(
             f"{quote_identifier(column_name)} {duckdb_type(column.type)}"
             for column_name, column in schema.columns.items()
@@ -88,11 +85,12 @@ def resolve_sql_table_references(project: Project, sql: str) -> str:
         if not table_expression.db and table_expression.name in cte_names:
             continue
         table_name = project.resolve_table_name(
-            table_expression.name, table_expression.db or None
+            f"{table_expression.db}.{table_expression.name}"
+            if table_expression.db
+            else table_expression.name
         )
-        namespace, local_name = split_resource_key(table_name)
-        table_expression.set("this", exp.to_identifier(local_name))
-        table_expression.set("db", exp.to_identifier(namespace))
+        table_expression.set("this", exp.to_identifier(table_name))
+        table_expression.set("db", None)
     return expression.sql(dialect="duckdb")
 
 
@@ -108,7 +106,11 @@ def referenced_sql_tables(project: Project, sql: str) -> set[str]:
         if not table_expression.db and table_expression.name in cte_names:
             continue
         tables.add(
-            project.resolve_table_name(table_expression.name, table_expression.db or None)
+            project.resolve_table_name(
+                f"{table_expression.db}.{table_expression.name}"
+                if table_expression.db
+                else table_expression.name
+            )
         )
     return tables
 
@@ -140,8 +142,7 @@ def query_lens(
 
 def table_sql(project: Project, table_name: str) -> str:
     resolved_table = project.resolve_table_name(table_name)
-    namespace, local_name = split_resource_key(resolved_table)
-    return f"SELECT * FROM {quote_identifier(namespace)}.{quote_identifier(local_name)}"
+    return f"SELECT * FROM {quote_identifier(resolved_table)}"
 
 
 def lens_sql(project: Project, lens_name: str) -> str:
@@ -285,12 +286,7 @@ def describe_resource_view(project: Project, resource_name: str, query: Resource
 
     analysis = analyze_resource_view(project, resource_name, shape.columns, query=query)
     column_map = analysis.column_map()
-    resource_kind, resolved_name = project.resolve_resource_name(resource_name)
-    primary_keys: set[str] = set()
-    if resource_kind == "table":
-        primary_keys = set(project.primary_key_columns(resolved_name))
-    elif resource_kind == "lens" and resolved_name in project.policies:
-        primary_keys = set(normalize_primary_key(project.policies[resolved_name].primary_key))
+    primary_keys = set(analysis.primary_key_outputs)
 
     rows = []
     for row in result.rows:
