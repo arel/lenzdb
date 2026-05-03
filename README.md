@@ -110,6 +110,8 @@ pip install lenzdb
 ## Common Commands
 
 ```bash
+lnz --help
+
 lnz add
 lnz list
 lnz view tasks
