@@ -11,7 +11,7 @@ def test_version_flag() -> None:
     result = CliRunner().invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert result.stdout.strip() == "lnz 0.1.4"
+    assert result.stdout.strip() == "lnz 0.1.5"
 
 
 def test_view_table_and_lens_markdown(example_project: Path) -> None:
