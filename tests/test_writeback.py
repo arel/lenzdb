@@ -114,6 +114,78 @@ def test_apply_updates_source_files(example_project: Path, tmp_path: Path) -> No
     assert b"\r\n" not in (example_project / "tasks.csv").read_bytes()
 
 
+def test_plan_updates_primary_table_columns_without_policy_or_ref_join_metadata(
+    example_project: Path, tmp_path: Path
+) -> None:
+    policy_path = example_project / ".lenzdb" / "policies" / "open_tasks.yaml"
+    policy_path.unlink()
+    schema_path = example_project / ".lenzdb" / "schema" / "tasks.yaml"
+    schema_path.write_text(
+        "table: tasks\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  title:\n"
+        "    type: string\n"
+        "  status:\n"
+        "    type: enum\n"
+        "    values: [todo, doing, done]\n"
+        "  project_id:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+    edited = tmp_path / "edited.csv"
+    edited.write_text(
+        "id,title,status,project_name\n"
+        "t-1,Ship CLI skeleton,done,Core Platform\n"
+        "t-2,Write getting started docs,doing,Docs Refresh\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    plan = build_mutation_plan(project, "open_tasks", edited)
+
+    assert len(plan.updates) == 1
+    assert plan.updates[0].changes == {"status": "done"}
+
+
+def test_plan_rejects_joined_column_edits_without_policy(
+    example_project: Path, tmp_path: Path
+) -> None:
+    policy_path = example_project / ".lenzdb" / "policies" / "open_tasks.yaml"
+    policy_path.unlink()
+    schema_path = example_project / ".lenzdb" / "schema" / "tasks.yaml"
+    schema_path.write_text(
+        "table: tasks\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  title:\n"
+        "    type: string\n"
+        "  status:\n"
+        "    type: enum\n"
+        "    values: [todo, doing, done]\n"
+        "  project_id:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+    edited = tmp_path / "edited.csv"
+    edited.write_text(
+        "id,title,status,project_name\n"
+        "t-1,Ship CLI skeleton,todo,New Project Name\n"
+        "t-2,Write getting started docs,doing,Docs Refresh\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    with pytest.raises(MutationError, match="Joined lookup column 'project_name' is not writable"):
+        build_mutation_plan(project, "open_tasks", edited)
+
+
 def test_table_resource_plan_and_apply(example_project: Path, tmp_path: Path) -> None:
     edited = tmp_path / "tasks.csv"
     edited.write_text(

@@ -359,13 +359,13 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
 
     for join in joins:
         if not isinstance(join.this, exp.Table):
-            reasons.append("join target must be a concrete table")
+            warnings.append("join target must be a concrete table")
             continue
         join_table = project.resolve_table_name(join.this.name, join.this.db or None)
         join_alias = join.this.alias_or_name
         aliases[join_alias] = join_table
         if join.args.get("side") not in {None, "LEFT", "RIGHT", "INNER"}:
-            reasons.append(
+            warnings.append(
                 f"join to {join_table!r} uses unsupported join side {join.args.get('side')!r}"
             )
             continue
@@ -378,7 +378,7 @@ def analyze_lens(project: Project, lens_name: str) -> LensAnalysis:
             project,
         )
         if not is_safe:
-            reasons.append(reason)
+            warnings.append(reason)
         else:
             warnings.append(reason)
 

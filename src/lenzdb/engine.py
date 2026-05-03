@@ -276,10 +276,15 @@ def describe_resource_view(project: Project, resource_name: str, query: Resource
     connection = build_connection(project, load_resource_rows(project, resource_name))
     try:
         sql = build_resource_view_query_sql(project, resource_name, query, connection)
+        shape = fetch_query_result(connection, f"SELECT * FROM ({sql}) LIMIT 0")
         result = fetch_query_result(connection, f"DESCRIBE ({sql})")
     finally:
         connection.close()
 
+    from lenzdb.planner import analyze_resource_view
+
+    analysis = analyze_resource_view(project, resource_name, shape.columns, query=query)
+    column_map = analysis.column_map()
     resource_kind, resolved_name = project.resolve_resource_name(resource_name)
     primary_keys: set[str] = set()
     if resource_kind == "table":
@@ -291,14 +296,16 @@ def describe_resource_view(project: Project, resource_name: str, query: Resource
     for row in result.rows:
         column_name = row.get("column_name")
         primary_key = column_name in primary_keys
+        analyzed_column = column_map.get(column_name)
         rows.append(
             {
                 "column": column_name,
                 "type": row.get("column_type"),
                 "primary_key": "yes" if primary_key else "no",
+                "writable": "yes" if analyzed_column and analyzed_column.writable else "no",
             }
         )
-    return QueryResult(columns=["column", "type", "primary_key"], rows=rows)
+    return QueryResult(columns=["column", "type", "primary_key", "writable"], rows=rows)
 
 
 def query_table(

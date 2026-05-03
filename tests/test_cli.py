@@ -65,9 +65,9 @@ def test_describe_table_shape(runner, example_project: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "| column | type | primary_key |" in result.stdout
-    assert "| id | VARCHAR | yes |" in result.stdout
-    assert "| status | VARCHAR | no |" in result.stdout
+    assert "| column | type | primary_key | writable |" in result.stdout
+    assert "| id | VARCHAR | yes | no |" in result.stdout
+    assert "| status | VARCHAR | no | yes |" in result.stdout
 
 
 def test_describe_lens_selected_columns(runner, example_project: Path) -> None:
@@ -86,8 +86,8 @@ def test_describe_lens_selected_columns(runner, example_project: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "| id | VARCHAR | yes |" in result.stdout
-    assert "| project_name | VARCHAR | no |" in result.stdout
+    assert "| id | VARCHAR | yes | no |" in result.stdout
+    assert "| project_name | VARCHAR | no | yes |" in result.stdout
     assert "title" not in result.stdout
 
 
@@ -119,9 +119,9 @@ def test_describe_count_and_sql_shapes(runner, example_project: Path) -> None:
     )
 
     assert count_result.exit_code == 0
-    assert "| count | BIGINT | no |" in count_result.stdout
+    assert "| count | BIGINT | no | no |" in count_result.stdout
     assert sql_result.exit_code == 0
-    assert "| title | VARCHAR | no |" in sql_result.stdout
+    assert "| title | VARCHAR | no | yes |" in sql_result.stdout
     assert "project_id" not in sql_result.stdout
 
 

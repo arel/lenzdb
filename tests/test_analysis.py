@@ -129,4 +129,37 @@ def test_analysis_rejects_unsafe_join(example_project: Path) -> None:
     project = Project.discover(example_project)
     analysis = analyze_lens(project, "task_comments")
     assert analysis.writable is False
-    assert any("not recognized as a many-to-one lookup" in reason for reason in analysis.reasons)
+    assert any("not recognized as a many-to-one lookup" in warning for warning in analysis.warnings)
+    assert any("do not map one-to-one" in reason for reason in analysis.reasons)
+
+
+def test_analysis_allows_primary_table_writes_with_read_only_join_without_policy(
+    example_project: Path,
+) -> None:
+    policy_path = example_project / ".lenzdb" / "policies" / "open_tasks.yaml"
+    policy_path.unlink()
+    schema_path = example_project / ".lenzdb" / "schema" / "tasks.yaml"
+    schema_path.write_text(
+        "table: tasks\n"
+        "primary_key: id\n"
+        "columns:\n"
+        "  id:\n"
+        "    type: string\n"
+        "    immutable: true\n"
+        "  title:\n"
+        "    type: string\n"
+        "  status:\n"
+        "    type: enum\n"
+        "    values: [todo, doing, done]\n"
+        "  project_id:\n"
+        "    type: string\n",
+        encoding="utf-8",
+    )
+
+    project = Project.discover(example_project)
+    analysis = analyze_lens(project, "open_tasks")
+
+    assert analysis.writable is True
+    assert analysis.column_map()["status"].writable is True
+    assert analysis.column_map()["project_name"].writable is False
+    assert any("not recognized as a many-to-one lookup" in warning for warning in analysis.warnings)
