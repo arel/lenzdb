@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import os
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -44,6 +44,14 @@ def resource_key(namespace: str, name: str) -> str:
 
 def split_resource_key(key: str) -> tuple[str, str]:
     return parse_namespaced_name(key)
+
+
+@dataclass(slots=True)
+class InvalidResource:
+    namespace: str
+    name: str
+    path: Path
+    message: str
 
 
 def has_glob_pattern(value: str) -> bool:
@@ -129,8 +137,10 @@ class Project:
     schema_dir: Path
     policies_dir: Path
     table_paths: dict[str, Path]
+    invalid_table_paths: dict[Path, InvalidResource]
     schemas: dict[str, TableSchema]
     lenses: dict[str, Path]
+    invalid_lens_paths: dict[Path, InvalidResource]
     policies: dict[str, LensPolicy]
     view_page_size: int = DEFAULT_VIEW_PAGE_SIZE
 
@@ -160,13 +170,13 @@ class Project:
         else:
             schemas = cls._load_schemas(schema_dir, require_schema=not allow_incomplete)
 
-        table_paths = cls._load_tables(
+        table_paths, invalid_table_paths = cls._load_tables(
             project_root,
             data_dir,
             project_config,
             require_tables=not allow_incomplete,
         )
-        lenses = cls._load_lenses(
+        lenses, invalid_lens_paths = cls._load_lenses(
             project_root,
             lenses_dir,
             project_config,
@@ -179,8 +189,10 @@ class Project:
             schema_dir=schema_dir,
             policies_dir=policies_dir,
             table_paths=table_paths,
+            invalid_table_paths=invalid_table_paths,
             schemas=schemas,
             lenses=lenses,
+            invalid_lens_paths=invalid_lens_paths,
             policies=policies,
             view_page_size=view_page_size,
         )
@@ -251,17 +263,16 @@ class Project:
         project_config: dict[str, Any],
         *,
         require_tables: bool = True,
-    ) -> dict[str, Path]:
+    ) -> tuple[dict[str, Path], dict[Path, InvalidResource]]:
         table_paths: dict[str, Path] = {}
+        invalid_table_paths: dict[Path, InvalidResource] = {}
         for source_dir in [project_root, data_dir]:
             if not source_dir.exists():
                 continue
             for path in sorted(source_dir.glob("*.csv")):
-                namespace, name = parse_namespaced_name(path.stem)
-                cls._add_resource_path(
+                cls._add_discovered_path(
                     table_paths,
-                    namespace=namespace,
-                    name=name,
+                    invalid_table_paths,
                     path=path,
                     resource_kind="CSV table",
                 )
@@ -271,13 +282,14 @@ class Project:
             suffix=".csv",
             resource_kind="CSV table",
             resources=table_paths,
+            invalid_resources=invalid_table_paths,
             require_existing=require_tables,
         )
         if require_tables and not table_paths:
             raise ProjectError(
                 f"No CSV table files found in {project_root} or {data_dir}"
             )
-        return table_paths
+        return table_paths, invalid_table_paths
 
     @classmethod
     def _load_lenses(
@@ -285,17 +297,16 @@ class Project:
         project_root: Path,
         lenses_dir: Path,
         project_config: dict[str, Any],
-    ) -> dict[str, Path]:
+    ) -> tuple[dict[str, Path], dict[Path, InvalidResource]]:
         lenses: dict[str, Path] = {}
+        invalid_lens_paths: dict[Path, InvalidResource] = {}
         for source_dir in [project_root, lenses_dir]:
             if not source_dir.exists():
                 continue
             for path in sorted(source_dir.glob("*.sql")):
-                namespace, name = parse_namespaced_name(path.stem)
-                cls._add_resource_path(
+                cls._add_discovered_path(
                     lenses,
-                    namespace=namespace,
-                    name=name,
+                    invalid_lens_paths,
                     path=path,
                     resource_kind="lens",
                 )
@@ -305,9 +316,50 @@ class Project:
             suffix=".sql",
             resource_kind="lens",
             resources=lenses,
+            invalid_resources=invalid_lens_paths,
             require_existing=True,
         )
-        return lenses
+        return lenses, invalid_lens_paths
+
+    @classmethod
+    def _add_discovered_path(
+        cls,
+        resources: dict[str, Path],
+        invalid_resources: dict[Path, InvalidResource],
+        *,
+        path: Path,
+        resource_kind: str,
+        namespace: str | None = None,
+        name: str | None = None,
+    ) -> None:
+        if name is not None:
+            cls._add_resource_path(
+                resources,
+                namespace=namespace or DEFAULT_NAMESPACE,
+                name=name,
+                path=path,
+                resource_kind=resource_kind,
+            )
+            return
+
+        try:
+            parsed_namespace, parsed_name = parse_namespaced_name(path.stem)
+        except ProjectError as exc:
+            invalid_resources[path] = InvalidResource(
+                namespace=namespace or DEFAULT_NAMESPACE,
+                name=path.stem,
+                path=path,
+                message=str(exc),
+            )
+            return
+
+        cls._add_resource_path(
+            resources,
+            namespace=namespace or parsed_namespace,
+            name=parsed_name,
+            path=path,
+            resource_kind=resource_kind,
+        )
 
     @classmethod
     def _load_registered_paths(
@@ -318,6 +370,7 @@ class Project:
         suffix: str,
         resource_kind: str,
         resources: dict[str, Path],
+        invalid_resources: dict[Path, InvalidResource],
         require_existing: bool = True,
     ) -> None:
         for index, entry in enumerate(entries, start=1):
@@ -389,26 +442,26 @@ class Project:
                         raise ProjectError(
                             f"Registered {resource_kind} path must point to a {suffix} file: {path}"
                         )
-                    path_namespace, path_name = parse_namespaced_name(path.stem)
-                    cls._add_resource_path(
+                    cls._add_discovered_path(
                         resources,
-                        namespace=namespace or path_namespace,
-                        name=configured_name or path_name,
+                        invalid_resources,
                         path=path,
                         resource_kind=resource_kind,
+                        namespace=namespace,
+                        name=configured_name,
                     )
                     continue
                 if not path.is_file() or path.suffix != suffix:
                     raise ProjectError(
                         f"Registered {resource_kind} path must point to a {suffix} file: {path}"
                     )
-                path_namespace, path_name = parse_namespaced_name(path.stem)
-                cls._add_resource_path(
+                cls._add_discovered_path(
                     resources,
-                    namespace=namespace or path_namespace,
-                    name=configured_name or path_name,
+                    invalid_resources,
                     path=path,
                     resource_kind=resource_kind,
+                    namespace=namespace,
+                    name=configured_name,
                 )
 
     @staticmethod

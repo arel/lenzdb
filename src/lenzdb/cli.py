@@ -35,6 +35,7 @@ from lenzdb.planner import (
 from lenzdb.project import (
     DEFAULT_NAMESPACE,
     TABLES_CONFIG_KEY,
+    InvalidResource,
     Project,
     normalize_primary_key,
     parse_qualified_name,
@@ -130,7 +131,28 @@ def project_namespaces(project: Project) -> list[str]:
     namespaces = {split_resource_key(key)[0] for key in project.schemas}
     namespaces.update(split_resource_key(key)[0] for key in project.table_paths)
     namespaces.update(split_resource_key(key)[0] for key in project.lenses)
+    namespaces.update(issue.namespace for issue in project.invalid_table_paths.values())
+    namespaces.update(issue.namespace for issue in project.invalid_lens_paths.values())
     return sorted(namespaces)
+
+
+def record_invalid_resource(
+    invalid_resources: dict[Path, InvalidResource],
+    *,
+    path: Path,
+    namespace: str,
+    resource_kind: str,
+    error: str,
+) -> None:
+    invalid_resources.setdefault(
+        path.resolve(),
+        InvalidResource(
+            namespace=namespace,
+            name=path.stem,
+            path=path.resolve(),
+            message=f"{resource_kind} name parse error: {error}",
+        ),
+    )
 
 
 def add_current_dir_resources(project: Project) -> None:
@@ -143,12 +165,32 @@ def add_current_dir_resources(project: Project) -> None:
         return
 
     for path in sorted(current_dir.glob("*.csv")):
-        namespace, name = parse_namespaced_name(path.stem)
+        try:
+            namespace, name = parse_namespaced_name(path.stem)
+        except LenzError as exc:
+            record_invalid_resource(
+                project.invalid_table_paths,
+                path=path,
+                namespace=DEFAULT_NAMESPACE,
+                resource_kind="CSV table",
+                error=str(exc),
+            )
+            continue
         key = resource_key(namespace, name)
         project.table_paths.setdefault(key, path.resolve())
 
     for path in sorted(current_dir.glob("*.sql")):
-        namespace, name = parse_namespaced_name(path.stem)
+        try:
+            namespace, name = parse_namespaced_name(path.stem)
+        except LenzError as exc:
+            record_invalid_resource(
+                project.invalid_lens_paths,
+                path=path,
+                namespace=DEFAULT_NAMESPACE,
+                resource_kind="lens",
+                error=str(exc),
+            )
+            continue
         key = resource_key(namespace, name)
         project.lenses.setdefault(key, path.resolve())
 
@@ -415,7 +457,9 @@ def state_for_namespace(project: Project, namespace: str) -> str:
     has_table = any(split_resource_key(key)[0] == namespace for key in project.schemas)
     has_table_path = any(split_resource_key(key)[0] == namespace for key in project.table_paths)
     has_lens = any(split_resource_key(key)[0] == namespace for key in project.lenses)
-    return "added" if has_table or has_table_path or has_lens else "missing"
+    has_invalid_table = any(issue.namespace == namespace for issue in project.invalid_table_paths.values())
+    has_invalid_lens = any(issue.namespace == namespace for issue in project.invalid_lens_paths.values())
+    return "added" if has_table or has_table_path or has_lens or has_invalid_table or has_invalid_lens else "missing"
 
 
 def header_error_for_table(project: Project, table_name: str) -> str | None:
@@ -438,6 +482,11 @@ def header_error_for_table(project: Project, table_name: str) -> str | None:
 
 
 def state_for_table(project: Project, table_name: str) -> str:
+    if any(
+        issue.namespace == split_resource_key(table_name)[0] and issue.name == split_resource_key(table_name)[1]
+        for issue in project.invalid_table_paths.values()
+    ):
+        return "error"
     has_schema = table_name in project.schemas
     path = project.table_paths.get(table_name)
     has_csv = path is not None
@@ -452,6 +501,10 @@ def state_for_table(project: Project, table_name: str) -> str:
 
 
 def check_for_namespace(project: Project, namespace: str) -> str:
+    if any(issue.namespace == namespace for issue in project.invalid_table_paths.values()) or any(
+        issue.namespace == namespace for issue in project.invalid_lens_paths.values()
+    ):
+        return "error"
     return "ok" if state_for_namespace(project, namespace) == "added" else "missing"
 
 
@@ -459,6 +512,10 @@ def check_for_table(project: Project, table_name: str) -> str:
     state = state_for_table(project, table_name)
     if state != "added":
         if state == "error":
+            namespace, name = split_resource_key(table_name)
+            for issue in project.invalid_table_paths.values():
+                if issue.namespace == namespace and issue.name == name:
+                    return issue.message
             return header_error_for_table(project, table_name) or "error"
         return state
     try:
@@ -484,12 +541,21 @@ def check_for_table(project: Project, table_name: str) -> str:
 
 
 def state_for_lens(project: Project, lens_name: str) -> str:
+    if any(
+        issue.namespace == split_resource_key(lens_name)[0] and issue.name == split_resource_key(lens_name)[1]
+        for issue in project.invalid_lens_paths.values()
+    ):
+        return "error"
     path = project.lenses.get(lens_name)
     return "added" if path is not None and path.exists() else "missing"
 
 
 def check_for_lens(project: Project, lens_name: str) -> str:
     if state_for_lens(project, lens_name) != "added":
+        namespace, name = split_resource_key(lens_name)
+        for issue in project.invalid_lens_paths.values():
+            if issue.namespace == namespace and issue.name == name:
+                return issue.message
         return "missing"
     try:
         analyze_lens(project, lens_name)
@@ -527,6 +593,18 @@ def build_list_rows(project: Project, check: bool) -> list[dict[str, str]]:
             row["check"] = check_for_table(project, table_name)
         rows.append(row)
 
+    for invalid in sorted(project.invalid_table_paths.values(), key=lambda issue: (issue.namespace, issue.name, str(issue.path))):
+        row = {
+            "kind": "table",
+            "namespace": invalid.namespace,
+            "name": invalid.name,
+            "path": relative_path(project, invalid.path),
+            "state": "error",
+        }
+        if check:
+            row["check"] = invalid.message
+        rows.append(row)
+
     for lens_name, path in sorted(project.lenses.items()):
         namespace, name = split_resource_key(lens_name)
         row = {
@@ -538,6 +616,18 @@ def build_list_rows(project: Project, check: bool) -> list[dict[str, str]]:
         }
         if check:
             row["check"] = check_for_lens(project, lens_name)
+        rows.append(row)
+
+    for invalid in sorted(project.invalid_lens_paths.values(), key=lambda issue: (issue.namespace, issue.name, str(issue.path))):
+        row = {
+            "kind": "lens",
+            "namespace": invalid.namespace,
+            "name": invalid.name,
+            "path": relative_path(project, invalid.path),
+            "state": "error",
+        }
+        if check:
+            row["check"] = invalid.message
         rows.append(row)
     return rows
 

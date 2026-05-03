@@ -804,6 +804,17 @@ def test_list_resources_marks_header_mismatch_as_state_error(
     assert "| table | main | tasks | tasks.csv | error | header_mismatch:" in result.stdout
 
 
+def test_list_resources_marks_invalid_csv_filename_as_error(
+    runner, example_project: Path
+) -> None:
+    (example_project / "projects..csv").write_text("id,name\np-1,Broken\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["list", "--project", str(example_project), "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "| table | main | projects. | projects..csv | error |" in result.stdout
+
+
 def test_add_untracked_root_csv_by_table_name(runner, example_project: Path) -> None:
     (example_project / "new_table.csv").write_text(
         "key,name\n"
@@ -826,6 +837,21 @@ def test_add_untracked_root_csv_by_table_name(runner, example_project: Path) -> 
     )
     assert view_result.exit_code == 0
     assert "| n-1 | New row |" in view_result.stdout
+
+
+def test_view_ignores_invalid_neighboring_csv_in_current_dir(
+    runner, example_project: Path, monkeypatch
+) -> None:
+    workdir = example_project / "work"
+    workdir.mkdir()
+    (workdir / "projects..csv").write_text("id,name\np-1,Broken\n", encoding="utf-8")
+    monkeypatch.chdir(workdir)
+
+    result = runner.invoke(app, ["view", "tasks", "--format", "markdown"])
+
+    assert result.exit_code == 0
+    assert "Ship CLI skeleton" in result.stdout
+    assert "Write getting started docs" in result.stdout
 
 
 def test_add_csv_in_subfolder_registers_project_path(runner, example_project: Path) -> None:
