@@ -307,7 +307,7 @@ def test_view_list_format(runner, example_project: Path) -> None:
     )
 
     assert result.exit_code == 0
-    assert "- [t-1 | Ship CLI skeleton]" in result.stdout
+    assert "- t-1 | Ship CLI skeleton" in result.stdout
 
 
 def test_view_help_lists_output_formats(runner) -> None:
